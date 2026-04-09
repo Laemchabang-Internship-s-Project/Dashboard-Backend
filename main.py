@@ -7,10 +7,24 @@ from sqlalchemy import text
 from dotenv import load_dotenv
 
 from database import get_db
+from routers import OPD
+from routers import Power
+from routers import Pharmacy
+from routers import Car
+from routers import WFH
 
 load_dotenv()
 
 app = FastAPI(title="LCBH Dashboard API")
+
+app.include_router(OPD.router)
+app.include_router(Power.router)
+app.include_router(Pharmacy.router)
+app.include_router(Car.router)
+app.include_router(WFH.router)
+
+
+
 
 
 # ตั้งชื่อ Header ที่ต้องส่งมาใน Request (เช่น access_token: your_key)
@@ -30,6 +44,8 @@ async def get_api_key(api_key_header: str = Security(api_key_header)):
         )
 
 # --- ส่วนของ Endpoints (API) ---
+
+
 
 @app.get("/api/v1/test-db")
 def test_db_connection(
