@@ -8,7 +8,7 @@ from database import get_db
 from utils.security import get_api_key
 
 from routers import OPD, Power, Car, WFH
-from routers.queue_technical import Xray, Lab, Pharmacy,Financial
+from routers.queue_technical import Xray, Lab, Pharmacy
 
 from routers.queue_clinics import opd_main
 
