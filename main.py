@@ -7,81 +7,55 @@ from sqlalchemy import text
 from dotenv import load_dotenv
 
 from database import get_db
-from routers import OPD
-from routers import Power
-from routers import Pharmacy
-from routers import Car
-from routers import WFH
+# 1. เพิ่ม Import Xray (และตรวจสอบว่าชื่อไฟล์ในโฟลเดอร์ routers ตรงกันไหม)
+from routers import OPD, Power, Pharmacy, Car, WFH
+from routers.general import Xray 
 
 load_dotenv()
 
-app = FastAPI(title="LCBH Dashboard API")
+# --- ส่วนของ Security Functions ---
+API_KEY_NAME = "access_token"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    expected_api_key = os.getenv("DASHBOARD_API_KEY")
+    if api_key_header == expected_api_key and expected_api_key is not None:
+        return api_key_header
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, 
+        detail="Forbidden: Invalid API Key"
+    )
+
+app = FastAPI(
+    title="LCBH Dashboard API",
+    dependencies=[Depends(get_api_key)] 
+)
+
+# --- รวม Router ทั้งหมด ---
 app.include_router(OPD.router)
 app.include_router(Power.router)
 app.include_router(Pharmacy.router)
 app.include_router(Car.router)
 app.include_router(WFH.router)
-
-
-
-
-
-# ตั้งชื่อ Header ที่ต้องส่งมาใน Request (เช่น access_token: your_key)
-API_KEY_NAME = "access_token"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-
-async def get_api_key(api_key_header: str = Security(api_key_header)):
-    # ดึงค่ารหัสลับจาก .env มาเทียบ
-    expected_api_key = os.getenv("DASHBOARD_API_KEY")
-    
-    if api_key_header == expected_api_key and expected_api_key is not None:
-        return api_key_header
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Forbidden: Invalid API Key"
-        )
-
-# --- ส่วนของ Endpoints (API) ---
+app.include_router(Xray.router)
 
 
 
 @app.get("/api/v1/test-db")
-def test_db_connection(
-    db: Session = Depends(get_db),
-    api_key: str = Depends(get_api_key) # เพิ่มการเช็ค API Key
-):
+def test_db_connection(db: Session = Depends(get_db)):
+    # ไม่ต้องใส่ Depends(get_api_key) แล้วเพราะเราใส่ไว้ที่ระดับ app แล้ว
     try:
         sql = text("SELECT 1")
         db.execute(sql)
-        print("✅ Connected to MySQL Successfully!")
-        return {
-            "status": "success",
-            "message": "Connected to Database"
-        }
+        return {"status": "success", "message": "Connected to Database"}
     except Exception as e:
-        print(f"❌ Connection Failed: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Could not connect to database: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/total-services")
-def get_total_services(
-    db: Session = Depends(get_db),
-    api_key: str = Depends(get_api_key) # เพิ่มการเช็ค API Key
-):
+def get_total_services(db: Session = Depends(get_db)):
     try:
-        # Query เดิมที่ริวใช้ดึงข้อมูลจาก HOSxP
         sql = text("SELECT count(*) FROM ovst WHERE vstdttm >= CURDATE()")
         result = db.execute(sql).fetchone()
-        
-        return {
-            "today_total": result[0] if result else 0
-        }
+        return {"today_total": result[0] if result else 0}
     except Exception as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Query Error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
