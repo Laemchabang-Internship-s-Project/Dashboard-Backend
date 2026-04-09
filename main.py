@@ -10,6 +10,8 @@ from utils.security import get_api_key
 from routers import OPD, Power, Car, WFH
 from routers.queue_technical import Xray, Lab, Pharmacy,Financial
 
+from routers.queue_clinics import opd_main
+
 
 load_dotenv()
 
@@ -31,8 +33,8 @@ app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Ser
 app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"])
 
 app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"])
-app.include_router(Financial.router, prefix="/api/technical/Financial", tags=["Technical Services"])
 
+app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"])
 # --- System Check Endpoints ---
 
 @app.get("/api/system/test-db", tags=["System"])
