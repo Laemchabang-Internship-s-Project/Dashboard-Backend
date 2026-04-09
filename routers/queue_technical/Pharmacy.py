@@ -22,8 +22,8 @@ def get_queue_all(db: Session = Depends(get_db)):
         res = db.execute(query).fetchone()
         return {
             "all":     int(res[0] or 0),
-            "success": int(res[1] or 0),
-            "waitQty": int(res[2] or 0)
+            "finished": int(res[1] or 0),
+            "waiting": int(res[2] or 0)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
