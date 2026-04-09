@@ -10,6 +10,7 @@ from database import get_db
 # 1. เพิ่ม Import Xray (และตรวจสอบว่าชื่อไฟล์ในโฟลเดอร์ routers ตรงกันไหม)
 from routers import OPD, Power, Pharmacy, Car, WFH
 from routers.general import Xray 
+from routers.general import Lab
 
 load_dotenv()
 
@@ -38,6 +39,7 @@ app.include_router(Pharmacy.router)
 app.include_router(Car.router)
 app.include_router(WFH.router)
 app.include_router(Xray.router)
+app.include_router(Lab.router)
 
 
 
