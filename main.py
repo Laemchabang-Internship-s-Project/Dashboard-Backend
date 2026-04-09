@@ -7,8 +7,8 @@ from database import get_db
 
 from utils.security import get_api_key
 
-from routers import OPD, Power, Pharmacy, Car, WFH
-from routers.queue_technical import Xray, Lab,Pharmacy
+from routers import OPD, Power, Car, WFH
+from routers.queue_technical import Xray, Lab, Pharmacy,Financial
 
 
 load_dotenv()
@@ -22,7 +22,6 @@ app = FastAPI(
 # --- กลุ่มที่ 1: แผนกหลักและระบบซัพพอร์ต (Base Routers) ---
 app.include_router(OPD.router)
 app.include_router(Power.router)
-app.include_router(Pharmacy.router)
 app.include_router(Car.router)
 app.include_router(WFH.router)
 
@@ -32,6 +31,8 @@ app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Ser
 app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"])
 
 app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"])
+app.include_router(Financial.router, prefix="/api/technical/Financial", tags=["Technical Services"])
+
 # --- System Check Endpoints ---
 
 @app.get("/api/system/test-db", tags=["System"])
