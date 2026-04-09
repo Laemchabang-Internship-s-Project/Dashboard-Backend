@@ -10,7 +10,7 @@ router = APIRouter(
 @router.get("/summary")
 def get_rooms_summary(db: Session = Depends(get_db)):
     try:
-        # 1. Master List 13 ห้อง
+        # 1. Master List 13 ห้อง (คงไว้ตามต้นฉบับที่คุณให้มา)
         master_rooms = [
             {"code": "010", "name": "จุดซักประวัติผู้ป่วยนอก"},
             {"code": "062", "name": "จุดซักประวัติผู้ป่วยนอก (นัด)"},
@@ -29,7 +29,24 @@ def get_rooms_summary(db: Session = Depends(get_db)):
 
         target_codes = tuple(room["code"] for room in master_rooms)
 
-        # 2. SQL Query: ให้ Database แยก นัด/Walk-in ให้เลย
+        # 2. SQL ส่วนที่ 1: ดึงยอดสรุป Header แบบ Unique (แทนที่ก้อนเดิม)
+        header_query = text("""
+            SELECT 
+                COUNT(DISTINCT hn) AS opd_total,
+                COUNT(DISTINCT CASE WHEN room_code = '062' THEN hn END) AS appointment,
+                COUNT(DISTINCT CASE WHEN room_code != '062' THEN hn END) AS walk_in
+            FROM opd_queue 
+            WHERE date = CURDATE()
+        """)
+        header_res = db.execute(header_query).fetchone()
+        
+        header_data = {
+            "opd_total": int(header_res[0] or 0),
+            "appointment": int(header_res[1] or 0),
+            "walk_in": int(header_res[2] or 0)
+        }
+
+        # 3. SQL ส่วนที่ 2: ดึงข้อมูลแยกรายห้อง (Details)
         query = text("""
             SELECT 
                 q.room_code,
@@ -47,7 +64,7 @@ def get_rooms_summary(db: Session = Depends(get_db)):
         results = db.execute(query, {"rooms": target_codes}).fetchall()
         db_map = {row[0]: row for row in results}
 
-        # 3. ประกอบร่างข้อมูล
+        # 4. ประกอบร่างข้อมูลรายห้อง
         final_report = []
         for master in master_rooms:
             code = master["code"]
@@ -73,17 +90,9 @@ def get_rooms_summary(db: Session = Depends(get_db)):
                     "waiting": 0
                 })
 
-        # 4. Total OPD unique patient วันนี้
-        total_query = text("""
-            SELECT COUNT(DISTINCT hn) AS total_opd_patients_today
-            FROM opd_queue
-            WHERE date = CURDATE()
-        """)
-        total_result = db.execute(total_query).fetchone()
-        total_opd_today = int(total_result[0]) if total_result else 0
-
+        # ส่งผลลัพธ์กลับแบบครบชุด
         return {
-            "total_opd_today": total_opd_today,
+            "header": header_data,
             "rooms": final_report
         }
 
