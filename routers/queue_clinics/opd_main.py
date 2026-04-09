@@ -26,16 +26,14 @@ def get_rooms_summary(db: Session = Depends(get_db)):
             {"code": "113", "name": "ห้องตรวจโรคผิวหนัง"},
             {"code": "134", "name": "คลินิกตรวจอัลตราซาวด์"}
         ]
-        
+
         target_codes = tuple(room["code"] for room in master_rooms)
 
         # 2. SQL Query: ให้ Database แยก นัด/Walk-in ให้เลย
         query = text("""
             SELECT 
                 q.room_code,
-                -- ถ้ารหัสห้องคือ 062 ให้นับเป็น Appointment
                 SUM(CASE WHEN q.room_code = '062' THEN 1 ELSE 0 END) AS appointment,
-                -- ถ้าไม่ใช่ 062 ให้นับเป็น Walk-in
                 SUM(CASE WHEN q.room_code != '062' THEN 1 ELSE 0 END) AS walk_in,
                 COUNT(*) AS total,
                 SUM(CASE WHEN q.status_id = '3' THEN 1 ELSE 0 END) AS finished,
@@ -49,7 +47,7 @@ def get_rooms_summary(db: Session = Depends(get_db)):
         results = db.execute(query, {"rooms": target_codes}).fetchall()
         db_map = {row[0]: row for row in results}
 
-        # 3. ประกอบร่างข้อมูล (ดึงค่าจาก SQL มาใส่ให้ตรงช่อง)
+        # 3. ประกอบร่างข้อมูล
         final_report = []
         for master in master_rooms:
             code = master["code"]
@@ -58,9 +56,9 @@ def get_rooms_summary(db: Session = Depends(get_db)):
                 final_report.append({
                     "room_code": code,
                     "room_name": master["name"],
-                    "appointment": int(row[1]), # เปลี่ยนจาก 0 เป็นค่าที่ดึงจาก SQL
-                    "walk_in": int(row[2]),     # ดึงช่อง walk_in จาก SQL
-                    "total": int(row[3]),       # รวมทั้งหมด
+                    "appointment": int(row[1]),
+                    "walk_in": int(row[2]),
+                    "total": int(row[3]),
                     "finished": int(row[4]),
                     "waiting": int(row[5])
                 })
@@ -75,7 +73,19 @@ def get_rooms_summary(db: Session = Depends(get_db)):
                     "waiting": 0
                 })
 
-        return final_report
+        # 4. Total OPD unique patient วันนี้
+        total_query = text("""
+            SELECT COUNT(DISTINCT hn) AS total_opd_patients_today
+            FROM opd_queue
+            WHERE date = CURDATE()
+        """)
+        total_result = db.execute(total_query).fetchone()
+        total_opd_today = int(total_result[0]) if total_result else 0
+
+        return {
+            "total_opd_today": total_opd_today,
+            "rooms": final_report
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
