@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
 
-router = APIRouter(prefix="/api/v1/xray", tags=["Xray"])
+router = APIRouter( 
+    tags=["Technical Services"]
+    )
 
 @router.get("/summary")
 def get_xray_summary(db: Session = Depends(get_db)):

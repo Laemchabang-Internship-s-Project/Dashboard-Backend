@@ -4,8 +4,7 @@ from sqlalchemy import text
 from database import get_db
 
 router = APIRouter(
-    prefix="/api/v1/lab",
-    tags=["LAB"]
+    tags=["Technical Services"]
 )
 
 @router.get("/summary")
