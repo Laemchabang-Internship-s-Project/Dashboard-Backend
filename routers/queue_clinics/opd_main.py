@@ -10,7 +10,7 @@ router = APIRouter(
 @router.get("/summary")
 def get_rooms_summary(db: Session = Depends(get_db)):
     try:
-        # 1. กำหนดรายชื่อ 6 ห้องที่ริวต้องการ (Master List)
+        # 1. Master List 13 ห้อง
         master_rooms = [
             {"code": "010", "name": "จุดซักประวัติผู้ป่วยนอก"},
             {"code": "062", "name": "จุดซักประวัติผู้ป่วยนอก (นัด)"},
@@ -29,24 +29,27 @@ def get_rooms_summary(db: Session = Depends(get_db)):
         
         target_codes = tuple(room["code"] for room in master_rooms)
 
-        # 2. SQL Query: ดึงข้อมูลสรุปรายห้อง
-        # Logic: ห้องกลุ่มนี้เป็น Walk-in ทั้งหมด (Appointment = 0) ตามหน้าเว็บที่ริวส่งมา
+        # 2. SQL Query: ให้ Database แยก นัด/Walk-in ให้เลย
         query = text("""
             SELECT 
-                room_code,
+                q.room_code,
+                -- ถ้ารหัสห้องคือ 062 ให้นับเป็น Appointment
+                SUM(CASE WHEN q.room_code = '062' THEN 1 ELSE 0 END) AS appointment,
+                -- ถ้าไม่ใช่ 062 ให้นับเป็น Walk-in
+                SUM(CASE WHEN q.room_code != '062' THEN 1 ELSE 0 END) AS walk_in,
                 COUNT(*) AS total,
-                SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END) AS finished,
-                SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END) AS waiting
-            FROM opd_queue 
-            WHERE date = CURDATE() 
-              AND room_code IN :rooms
-            GROUP BY room_code
+                SUM(CASE WHEN q.status_id = '3' THEN 1 ELSE 0 END) AS finished,
+                SUM(CASE WHEN q.status_id != '3' THEN 1 ELSE 0 END) AS waiting
+            FROM opd_queue q
+            WHERE q.date = CURDATE() 
+              AND q.room_code IN :rooms
+            GROUP BY q.room_code
         """)
 
         results = db.execute(query, {"rooms": target_codes}).fetchall()
         db_map = {row[0]: row for row in results}
 
-        # 3. จัดโครงสร้างข้อมูลให้ครบทั้ง 6 ห้องตามลำดับ
+        # 3. ประกอบร่างข้อมูล (ดึงค่าจาก SQL มาใส่ให้ตรงช่อง)
         final_report = []
         for master in master_rooms:
             code = master["code"]
@@ -55,14 +58,13 @@ def get_rooms_summary(db: Session = Depends(get_db)):
                 final_report.append({
                     "room_code": code,
                     "room_name": master["name"],
-                    "appointment": 0,  # ตามหน้าเว็บกลุ่มนี้เป็น 0 ทั้งหมด
-                    "walk_in": int(row[1]),
-                    "total": int(row[1]),
-                    "finished": int(row[2]),
-                    "waiting": int(row[3])
+                    "appointment": int(row[1]), # เปลี่ยนจาก 0 เป็นค่าที่ดึงจาก SQL
+                    "walk_in": int(row[2]),     # ดึงช่อง walk_in จาก SQL
+                    "total": int(row[3]),       # รวมทั้งหมด
+                    "finished": int(row[4]),
+                    "waiting": int(row[5])
                 })
             else:
-                # กรณีห้องนั้นยังไม่มีคิวในวันนี้ (เช่น จุดคัดกรอง หรือ ผิวหนัง)
                 final_report.append({
                     "room_code": code,
                     "room_name": master["name"],
