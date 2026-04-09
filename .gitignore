@@ -1,0 +1,32 @@
+# --- Python / FastAPI ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+.venv
+build/
+dist/
+*.egg-info/
+
+# --- macOS (สำหรับ Mac M1 โดยเฉพาะ) ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# --- VS Code ---
+.vscode/
+*.code-workspace
+
+# --- Docker ---
+.docker/
+
+# --- Databases (ถ้ามีไฟล์ sqlite หรือ dump) ---
+*.sql
+*.sqlite3
+*.db
