@@ -21,19 +21,33 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vROk5cTxHtrHUXSuS7
 @router.get("/latest")
 def get_latest_fuel():
     try:
-        res = requests.get(SHEET_URL)
+        res = requests.get(SHEET_URL, timeout=10)
         res.encoding = "utf-8"
         lines = res.text.strip().split("\n")
-        last = lines[-1].split(",")  # แถวล่าสุด
+        
+        if len(lines) <= 1:  # มีแค่ header ไม่มีข้อมูล
+            raise HTTPException(status_code=404, detail="ไม่มีข้อมูล")
+        
+        last = lines[-1].split(",")
+        
         return {
-            "date":       last[1].strip('"'),
+            "date":       last[0].strip('"'),
+            "time":       last[1].strip('"'),
             "shift":      last[2].strip('"'),
             "type":       last[3].strip('"'),
             "fuel_level": float(last[4].strip('"')),
             "mileage":    float(last[5].strip('"')),
         }
+    except HTTPException:
+        raise  # โยน HTTPException ต่อไปตามเดิม
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Google Sheets ตอบสนองช้าเกินไป")
+    except requests.exceptions.ConnectionError:
+        raise HTTPException(status_code=503, detail="เชื่อมต่อ Google Sheets ไม่ได้")
+    except (IndexError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=f"รูปแบบข้อมูลใน Sheet ผิดพลาด: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"เกิดข้อผิดพลาด: {str(e)}")
 
 # -- carDashbrod 
 # -- carInfo
