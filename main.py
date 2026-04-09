@@ -8,7 +8,8 @@ from database import get_db
 from utils.security import get_api_key
 
 from routers import OPD, Power, Pharmacy, Car, WFH
-from routers.queue_technical import Xray, Lab
+from routers.queue_technical import Xray, Lab,Pharmacy
+
 
 load_dotenv()
 
@@ -30,6 +31,7 @@ app.include_router(WFH.router)
 app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"])
 app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"])
 
+app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"])
 # --- System Check Endpoints ---
 
 @app.get("/api/system/test-db", tags=["System"])

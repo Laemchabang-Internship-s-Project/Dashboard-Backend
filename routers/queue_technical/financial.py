@@ -6,4 +6,3 @@ from database import get_db
 router = APIRouter(prefix="/api/v1/financial", tags=["financial"])
 
 @router.get("/CountQueueAll")
-def
