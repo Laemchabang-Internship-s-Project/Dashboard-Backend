@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from dotenv import load_dotenv
@@ -48,7 +49,15 @@ app = FastAPI(
     version="2.0.0",
     description="ระบบ Dashboard โรงพยาบาลแหลมฉบัง (Real-time via Redis Pub/Sub)",
     lifespan=lifespan,
-    dependencies=[Depends(get_api_key)],
+    # dependencies=[Depends(get_api_key)],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ตอน dev ใช้ * ไปก่อน (prod ควรล็อก domain)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
