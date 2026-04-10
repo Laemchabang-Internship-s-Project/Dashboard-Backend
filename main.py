@@ -19,7 +19,7 @@ from cache_manager import (
     CHANNEL_DASHBOARD,
 )
 
-from routers import Power, Car, WFH
+from routers import Car
 from routers.queue_technical import Xray, Lab, Pharmacy, financial
 from routers.queue_clinics import opd_main
 
@@ -114,9 +114,9 @@ def dashboard_snapshot():
 # Router Registration
 # ==========================================================
 # --- กลุ่มที่ 1: ระบบซัพพอร์ต ---
-app.include_router(Power.router)
+# app.include_router(Power.router)
 app.include_router(Car.router)
-app.include_router(WFH.router)
+# app.include_router(WFH.router)
 
 # --- กลุ่มที่ 2: แผนกเทคนิค ---
 app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"])

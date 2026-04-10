@@ -102,7 +102,8 @@ async def update_redis_cache():
             # ==========================================
             # 1. ข้อมูลระบบภาพรวม (จำนวนผู้รับบริการวันนี้)
             # ==========================================
-            sys_sql = text("SELECT count(*) FROM ovst WHERE vstdttm >= CURDATE()")
+            # ใหม่ — นับจาก opd_queue แทน (Unique HN วันนี้)
+            sys_sql = text("SELECT COUNT(DISTINCT hn) FROM opd_queue WHERE date = CURDATE()")
             sys_res = db.execute(sys_sql).fetchone()
             total_services = int(sys_res[0]) if sys_res else 0
 
