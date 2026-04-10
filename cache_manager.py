@@ -96,6 +96,7 @@ async def update_redis_cache():
         db2 = SessionHOS()
 
         try:
+            
             hos_sql = text("""
                 SELECT 
                     SUM(CASE WHEN ovstist = '01' THEN 1 ELSE 0 END) as walk_in_count,
@@ -245,7 +246,8 @@ async def update_redis_cache():
                     "hos_ems":hos_ems,
                     "hos_telemed":hos_telemed,
                     "hos_kiosk":hos_kiosk,
-                    "tatal_walkin":hos_walk_in+hos_kiosk
+                    "total_walkin":hos_walk_in+hos_kiosk,
+                    "total_OPD":hos_walk_in+hos_appointment+hos_referIn+hos_ems+hos_kiosk
                 },
                 "opd_clinics": {
                     "header": {
