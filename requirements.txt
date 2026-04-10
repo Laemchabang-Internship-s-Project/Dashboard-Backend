@@ -4,3 +4,5 @@ sqlalchemy
 pymysql
 cryptography
 requests
+redis
+python-dotenv

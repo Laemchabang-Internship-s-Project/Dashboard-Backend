@@ -1,33 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import get_db
+from fastapi import APIRouter, HTTPException
+
+from cache_manager import get_cached_data
 
 router = APIRouter(
     tags=["Technical Services"]
 )
 
+
 @router.get("/summary")
-def get_lab_summary(db: Session = Depends(get_db)):
-    try:
-        # อ้างอิงจาก CountQueueAll, CountQueueSuccess และ CountQueueWaitQty ใน DLL
-        # status_id = '3' คือตรวจเสร็จแล้ว (Success)
-        # status_id != '3' คือกำลังรอ (Waiting)
-        query = text("""
-            SELECT 
-                COUNT(*) AS total_all,
-                SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END) AS total_waiting,
-                SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END) AS total_finished
-            FROM lab_queue 
-            WHERE date = CURDATE()
-        """)
-        
-        res = db.execute(query).fetchone()
-        
-        return {
-            "all": int(res[0] or 0),
-            "waiting": int(res[1] or 0),
-            "finished": int(res[2] or 0)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
+def get_lab_summary():
+    """ดึงข้อมูลสรุปคิว Lab วันนี้ (อ่านจาก Redis Cache)"""
+    data = get_cached_data("technical_services")
+    if not data:
+        raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม กรุณารอสักครู่")
+    return data.get("lab", {"all": 0, "waiting": 0, "finished": 0})

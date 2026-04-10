@@ -1,100 +1,71 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import get_db
+import asyncio
+import json
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+
+from cache_manager import get_cached_data, redis_client, CHANNEL_DASHBOARD
 
 router = APIRouter(
     tags=["OPD Clinics"]
 )
 
+
 @router.get("/summary")
-def get_rooms_summary(db: Session = Depends(get_db)):
-    try:
-        # 1. Master List 13 ห้อง (คงไว้ตามต้นฉบับที่คุณให้มา)
-        master_rooms = [
-            {"code": "010", "name": "จุดซักประวัติผู้ป่วยนอก"},
-            {"code": "062", "name": "จุดซักประวัติผู้ป่วยนอก (นัด)"},
-            {"code": "023", "name": "จุดรอตรวจ"},
-            {"code": "014", "name": "ห้องหลังพบแพทย์"},
-            {"code": "110", "name": "จุดซักประวัติผู้ป่วย (ศัลยกรรม)"},
-            {"code": "109", "name": "จุดซักประวัติผู้ป่วย (สูติกรรม)"},
-            {"code": "111", "name": "จุดซักประวัติผู้ป่วย (อายุรกรรม)"},
-            {"code": "005", "name": "ห้องทันตกรรม"},
-            {"code": "041", "name": "แพทย์แผนไทย"},
-            {"code": "042", "name": "กายภาพ"},
-            {"code": "082", "name": "จุดคัดกรอง OPD"},
-            {"code": "113", "name": "ห้องตรวจโรคผิวหนัง"},
-            {"code": "134", "name": "คลินิกตรวจอัลตราซาวด์"}
-        ]
+def get_rooms_summary():
+    """
+    ดึงข้อมูลสรุป OPD ทั้งหมด (อ่านจาก Redis Cache)
+    - header: ยอดรวม OPD แบบ Unique
+    - rooms: รายละเอียดแต่ละห้องตรวจ
+    """
+    data = get_cached_data("opd_clinics")
+    if not data:
+        raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม กรุณารอสักครู่")
+    return data
 
-        target_codes = tuple(room["code"] for room in master_rooms)
 
-        # 2. SQL ส่วนที่ 1: ดึงยอดสรุป Header แบบ Unique (แทนที่ก้อนเดิม)
-        header_query = text("""
-            SELECT 
-                COUNT(DISTINCT hn) AS opd_total,
-                COUNT(DISTINCT CASE WHEN room_code = '062' THEN hn END) AS appointment,
-                COUNT(DISTINCT CASE WHEN room_code != '062' THEN hn END) AS walk_in
-            FROM opd_queue 
-            WHERE date = CURDATE()
-        """)
-        header_res = db.execute(header_query).fetchone()
-        
-        header_data = {
-            "opd_total": int(header_res[0] or 0),
-            "appointment": int(header_res[1] or 0),
-            "walk_in": int(header_res[2] or 0)
-        }
+@router.get("/summary/stream")
+async def stream_opd_summary():
+    """
+    SSE Endpoint สำหรับรับข้อมูล OPD แบบ Real-time
+    - ส่งข้อมูลชุดแรกทันทีที่ต่อเข้ามา
+    - หลังจากนั้นรอรับสัญญาณ Publish จาก cache_manager ทุก 5 วินาที
+    - ส่งเฉพาะ section 'opd_clinics' ไปให้ Frontend
+    """
+    async def event_generator():
+        pubsub = redis_client.pubsub()
+        pubsub.subscribe(CHANNEL_DASHBOARD)
+        try:
+            # ส่งข้อมูลชุดแรกทันที
+            initial = get_cached_data("opd_clinics")
+            if initial:
+                yield f"data: {json.dumps(initial, ensure_ascii=False)}\n\n"
 
-        # 3. SQL ส่วนที่ 2: ดึงข้อมูลแยกรายห้อง (Details)
-        query = text("""
-            SELECT 
-                q.room_code,
-                SUM(CASE WHEN q.room_code = '062' THEN 1 ELSE 0 END) AS appointment,
-                SUM(CASE WHEN q.room_code != '062' THEN 1 ELSE 0 END) AS walk_in,
-                COUNT(*) AS total,
-                SUM(CASE WHEN q.status_id = '3' THEN 1 ELSE 0 END) AS finished,
-                SUM(CASE WHEN q.status_id != '3' THEN 1 ELSE 0 END) AS waiting
-            FROM opd_queue q
-            WHERE q.date = CURDATE() 
-              AND q.room_code IN :rooms
-            GROUP BY q.room_code
-        """)
+            # รอรับสัญญาณจาก Redis Pub/Sub
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=1.0,
+                )
+                if message and message["type"] == "message":
+                    # แกะเฉพาะ section ที่ต้องการ
+                    full_data = json.loads(message["data"])
+                    opd_data = full_data.get("opd_clinics", {})
+                    yield f"data: {json.dumps(opd_data, ensure_ascii=False)}\n\n"
+                else:
+                    await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            pubsub.unsubscribe(CHANNEL_DASHBOARD)
+            pubsub.close()
 
-        results = db.execute(query, {"rooms": target_codes}).fetchall()
-        db_map = {row[0]: row for row in results}
-
-        # 4. ประกอบร่างข้อมูลรายห้อง
-        final_report = []
-        for master in master_rooms:
-            code = master["code"]
-            if code in db_map:
-                row = db_map[code]
-                final_report.append({
-                    "room_code": code,
-                    "room_name": master["name"],
-                    "appointment": int(row[1]),
-                    "walk_in": int(row[2]),
-                    "total": int(row[3]),
-                    "finished": int(row[4]),
-                    "waiting": int(row[5])
-                })
-            else:
-                final_report.append({
-                    "room_code": code,
-                    "room_name": master["name"],
-                    "appointment": 0,
-                    "walk_in": 0,
-                    "total": 0,
-                    "finished": 0,
-                    "waiting": 0
-                })
-
-        # ส่งผลลัพธ์กลับแบบครบชุด
-        return {
-            "header": header_data,
-            "rooms": final_report
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

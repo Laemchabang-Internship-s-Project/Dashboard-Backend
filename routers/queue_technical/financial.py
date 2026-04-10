@@ -1,29 +1,16 @@
-from fastapi import APIRouter, Depends,HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import get_db
+from fastapi import APIRouter, HTTPException
 
-router = APIRouter( 
+from cache_manager import get_cached_data
+
+router = APIRouter(
     tags=["Technical Services"]
-    )
+)
+
 
 @router.get("/summary")
-def get_queue_all(db: Session = Depends(get_db)):
-    try:
-        query = text("""
-            SELECT
-                COUNT(*) AS total_all,
-                SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END) AS success,
-                SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END) AS waitQty
-            FROM finance_queue
-            WHERE date = CURDATE()
-        """)
-
-        res = db.execute(query).fetchone()
-        return {
-            "all":     int(res[0] or 0),
-            "finished": int(res[1] or 0),
-            "waiting": int(res[2] or 0)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
+def get_finance_summary():
+    """ดึงข้อมูลสรุปคิวการเงินวันนี้ (อ่านจาก Redis Cache)"""
+    data = get_cached_data("technical_services")
+    if not data:
+        raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม กรุณารอสักครู่")
+    return data.get("finance", {"all": 0, "finished": 0, "waiting": 0})
