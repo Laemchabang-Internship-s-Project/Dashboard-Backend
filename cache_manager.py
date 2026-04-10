@@ -3,7 +3,7 @@ import json
 import redis
 import os
 import requests
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from database_neoq import SessionLocal as SessionNEOQ
 
 # ==========================================================
@@ -23,7 +23,7 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vROk5cTxHtrHUXSuS7d
 
 
 # ==========================================================
-# Helper: ดึงข้อมูลจาก Redis Cache
+# Helper: Redis
 # ==========================================================
 def get_cached_data(section: str = None):
     raw = redis_client.get(KEY_DASHBOARD_CACHE)
@@ -95,7 +95,7 @@ async def update_redis_cache():
 
         try:
             # ==========================================
-            # 1. OPD TOTAL
+            # 1. OPD TOTAL (ยอดรวมภาพรวมคนไข้ไม่ซ้ำ HN)
             # ==========================================
             sys_sql = text("""
                 SELECT
@@ -105,7 +105,7 @@ async def update_redis_cache():
                 FROM opd_queue
                 WHERE date = CURDATE()
                 AND room_code IN :rooms
-            """)
+            """).bindparams(bindparam("rooms", expanding=True))
 
             sys_res = db.execute(sys_sql, {"rooms": OPD_TOTAL_ROOMS}).fetchone()
 
@@ -114,57 +114,31 @@ async def update_redis_cache():
             walk_in     = int(sys_res[2] or 0)
 
             # ==========================================
-            # 2. ROOM TABLE
+            # 2. ROOM TABLE (ดึงข้อมูลทุกจุดบริการ)
             # ==========================================
             target_codes = tuple(r["code"] for r in MASTER_ROOMS)
 
             opd_sql = text("""
                 SELECT 
                     room_code,
-                    SUM(CASE WHEN room_code = '062' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN room_code != '062' THEN 1 ELSE 0 END),
-                    COUNT(*),
-                    SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN room_code = '062' THEN 1 ELSE 0 END), -- index 1
+                    SUM(CASE WHEN room_code != '062' THEN 1 ELSE 0 END), -- index 2
+                    COUNT(*),                                          -- index 3: Total
+                    SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),    -- index 4: Finished
+                    SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)    -- index 5: Waiting
                 FROM opd_queue
                 WHERE date = CURDATE()
                 AND room_code IN :rooms
                 GROUP BY room_code
-            """)
+            """).bindparams(bindparam("rooms", expanding=True))
 
             res = db.execute(opd_sql, {"rooms": target_codes}).fetchall()
             db_map = {r[0]: r for r in res}
 
-            rooms = []
-            for m in MASTER_ROOMS:
-                r = db_map.get(m["code"])
-
-                if r:
-                    rooms.append({
-                        "room_code": m["code"],
-                        "room_name": m["name"],
-                        "appointment": int(r[1]),
-                        "walk_in": int(r[2]),
-                        "total": int(r[3]),
-                        "finished": int(r[4]),
-                        "waiting": int(r[5]),
-                    })
-                else:
-                    rooms.append({
-                        "room_code": m["code"],
-                        "room_name": m["name"],
-                        "appointment": 0,
-                        "walk_in": 0,
-                        "total": 0,
-                        "finished": 0,
-                        "waiting": 0,
-                    })
-
             # ==========================================
-            # 3. TECH SERVICES
+            # 3. TECH SERVICES (Lab, X-Ray, ยา, การเงิน)
             # ==========================================
             tech = {}
-
             for dept in ["xray_queue", "lab_queue"]:
                 sql = text(f"""
                     SELECT COUNT(*),
@@ -173,9 +147,7 @@ async def update_redis_cache():
                     FROM {dept}
                     WHERE date = CURDATE()
                 """)
-
                 r = db.execute(sql).fetchone()
-
                 tech[dept] = {
                     "all": int(r[0] or 0),
                     "waiting": int(r[1] or 0),
@@ -190,9 +162,7 @@ async def update_redis_cache():
                     FROM {dept}
                     WHERE date = CURDATE()
                 """)
-
                 r = db.execute(sql).fetchone()
-
                 tech[dept] = {
                     "all": int(r[0] or 0),
                     "finished": int(r[1] or 0),
@@ -200,13 +170,46 @@ async def update_redis_cache():
                 }
 
             # ==========================================
-            # 4. FUEL
+            # 4. KPI Calculation (Logic ใหม่: ดึงจาก 'รอรับบริการ' ตรงๆ)
+            # ==========================================
+            # ดึงข้อมูลจากจุด 010 (ซักประวัติ) และ 062 (ซักนัด)
+            data_010 = db_map.get('010', [0,0,0,0,0,0])
+            data_062 = db_map.get('062', [0,0,0,0,0,0])
+            data_023 = db_map.get('023', [0,0,0,0,0,0])
+
+            # ✅ รวมผู้บริการภายนอก = Total 010 + Total 062
+            custom_opd_total = int(data_010[3]) + int(data_062[3])
+
+            # ✅ รอซักประวัติ = Waiting 010 + Waiting 062
+            waiting_screening = int(data_010[5]) + int(data_062[5])
+
+            # ✅ รอตรวจ = Waiting 023 (จุดรอตรวจ)
+            waiting_exam = int(data_023[5])
+
+            # ==========================================
+            # 5. BUILD ROOMS LIST
+            # ==========================================
+            rooms = []
+            for m in MASTER_ROOMS:
+                r = db_map.get(m["code"])
+                if r:
+                    rooms.append({
+                        "room_code": m["code"],
+                        "room_name": m["name"],
+                        "appointment": int(r[1]),
+                        "walk_in": int(r[2]),
+                        "total": int(r[3]),
+                        "finished": int(r[4]),
+                        "waiting": int(r[5]),
+                    })
+                else:
+                    rooms.append({"room_code": m["code"], "room_name": m["name"], "appointment": 0, "walk_in": 0, "total": 0, "finished": 0, "waiting": 0})
+
+            # ==========================================
+            # 6. FUEL & FINAL JSON
             # ==========================================
             fuel = await fetch_fuel_data()
 
-            # ==========================================
-            # 5. FINAL JSON
-            # ==========================================
             data = {
                 "system": {
                     "today_total_services": opd_total,
@@ -216,6 +219,9 @@ async def update_redis_cache():
                         "opd_total": opd_total,
                         "appointment": appointment,
                         "walk_in": walk_in,
+                        "custom_opd_total": custom_opd_total,
+                        "waiting_screening": waiting_screening,
+                        "waiting_exam": waiting_exam
                     },
                     "rooms": rooms,
                 },
@@ -231,13 +237,11 @@ async def update_redis_cache():
             }
 
             json_data = json.dumps(data, ensure_ascii=False)
-
             redis_client.set(KEY_DASHBOARD_CACHE, json_data)
             redis_client.publish(CHANNEL_DASHBOARD, json_data)
 
         except Exception as e:
             print(f"[Cache Worker] Error: {e}")
-
         finally:
             db.close()
 
