@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from dotenv import load_dotenv
 
-from database_neoq import get_db
-from database_hos import get_db
+from database_neoq import get_db as get_neoq_db
+from database_hos import get_db as get_hos_db
 from utils.security import get_api_key
 
 # --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
@@ -132,15 +132,23 @@ app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"])
 # ==========================================================
 # System Endpoints
 # ==========================================================
-@app.get("/api/system/test-db", tags=["System"])
-def test_db_connection(db: Session = Depends(get_db)):
+@app.get("/api/system/test-neoq-db", tags=["System"])
+def test_db_connection(db: Session = Depends(get_neoq_db)):
     """ทดสอบการเชื่อมต่อ Database"""
     try:
         db.execute(text("SELECT 1"))
-        return {"status": "success", "message": "Connected to Database"}
+        return {"status": "success", "message": "Connected to neoq Database"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB Connection Error: {str(e)}")
 
+@app.get("/api/system/test-hos-db", tags=["System"])
+def test_db_connection(db: Session = Depends(get_hos_db)):
+    """ทดสอบการเชื่อมต่อ Database"""
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "success", "message": "Connected to hos Database"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB Connection Error: {str(e)}")
 
 @app.get("/api/system/test-redis", tags=["System"])
 def test_redis_connection():
