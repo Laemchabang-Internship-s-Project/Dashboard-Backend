@@ -7,7 +7,7 @@ from database import get_db
 
 from utils.security import get_api_key
 
-from routers import OPD, Power, Car, WFH
+from routers import Power, Car, WFH
 from routers.queue_technical import Xray, Lab, Pharmacy
 
 from routers.queue_clinics import opd_main
@@ -22,7 +22,6 @@ app = FastAPI(
 )
 
 # --- กลุ่มที่ 1: แผนกหลักและระบบซัพพอร์ต (Base Routers) ---
-app.include_router(OPD.router)
 app.include_router(Power.router)
 app.include_router(Car.router)
 app.include_router(WFH.router)
