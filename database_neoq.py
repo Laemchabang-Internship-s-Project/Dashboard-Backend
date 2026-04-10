@@ -7,11 +7,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-user = os.getenv('DB_USER')
-password = os.getenv('DB_PASS') 
-host = os.getenv('DB_HOST')
-port = os.getenv('DB_PORT')
-name = os.getenv('DB_NAME')
+user = os.getenv('neoq_USER')
+password = os.getenv('neoq_PASS') 
+host = os.getenv('neoq_HOST')
+port = os.getenv('neoq_PORT')
+name = os.getenv('neoq_NAME')
 
 
 safe_password = urllib.parse.quote_plus(password)

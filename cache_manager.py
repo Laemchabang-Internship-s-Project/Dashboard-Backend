@@ -4,7 +4,8 @@ import redis
 import os
 import requests
 from sqlalchemy import text
-from database import SessionLocal
+from database_neoq import SessionLocal as SessionNEOQ
+from database_hos import SessionLocal as SessionHOS
 
 # ==========================================================
 # Redis Connection (ศูนย์กลางการเชื่อมต่อ Redis ของทั้งระบบ)
@@ -97,7 +98,8 @@ async def update_redis_cache():
     """Worker หลักที่ดึงข้อมูลจาก Database ทุก 5 วินาที แล้ว Publish ลง Redis"""
     print("[Cache Worker] เริ่มทำงาน... (ดึงข้อมูลทุก 5 วินาที)")
     while True:
-        db = SessionLocal()
+        hos_db = SessionHOS()
+        neoq_db = SessionNEOQ()
         try:
             # ==========================================
             # 1. ข้อมูลระบบภาพรวม (จำนวนผู้รับบริการวันนี้)

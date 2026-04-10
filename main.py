@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from dotenv import load_dotenv
 
-from database import get_db
+from database_neoq import get_db
+from database_hos import get_db
 from utils.security import get_api_key
 
 # --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
