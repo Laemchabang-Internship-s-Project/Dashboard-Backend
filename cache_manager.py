@@ -5,6 +5,7 @@ import os
 import requests
 from sqlalchemy import text
 from database_neoq import SessionLocal as SessionNEOQ
+from database_hos import SessionLocal as SessionHOS
 
 # ==========================================================
 # Redis Connection
@@ -92,8 +93,32 @@ async def update_redis_cache():
 
     while True:
         db = SessionNEOQ()
+        db2 = SessionHOS()
 
         try:
+            hos_sql = text("""
+                SELECT 
+                    SUM(CASE WHEN ovstist = '01' THEN 1 ELSE 0 END) as walk_in_count,
+                    SUM(CASE WHEN ovstist = '02' THEN 1 ELSE 0 END) as appointment_count,
+                    SUM(CASE WHEN ovstist = '03' THEN 1 ELSE 0 END) as referIn_count,
+                    SUM(CASE WHEN ovstist = '04' THEN 1 ELSE 0 END) as ems_count,
+                    SUM(CASE WHEN ovstist = '05' THEN 1 ELSE 0 END) as telemed_count,
+                    SUM(CASE WHEN ovstist = '06' THEN 1 ELSE 0 END) as kiosk_count
+                FROM ovst 
+                WHERE vstdate = CURDATE()
+            """)
+            hos_res = db2.execute(hos_sql).fetchone()
+            hos_walk_in = int(hos_res[0] or 0)
+            hos_appointment = int(hos_res[1] or 0)
+            hos_referIn = int(hos_res[2] or 0)
+            hos_ems = int(hos_res[3] or 0)
+            hos_telemed = int(hos_res[4] or 0)
+            hos_kiosk = int(hos_res[5] or 0)
+
+            hos_opd = text("""
+                SELECT
+                           
+            """)
             # ==========================================
             # 1. OPD TOTAL
             # ==========================================
@@ -210,6 +235,14 @@ async def update_redis_cache():
             data = {
                 "system": {
                     "today_total_services": opd_total,
+                    # ---- มาจากตัวแปรที่คิวรี่จาก db2 ---
+                    "hos_walk_in":hos_walk_in,
+                    "hos_appointment":hos_appointment,
+                    "hos_referIn":hos_referIn,
+                    "hos_ems":hos_ems,
+                    "hos_telemed":hos_telemed,
+                    "hos_kiosk":hos_kiosk,
+                    "tatal_walkin":hos_walk_in+hos_kiosk
                 },
                 "opd_clinics": {
                     "header": {
@@ -240,5 +273,6 @@ async def update_redis_cache():
 
         finally:
             db.close()
+            db2.close()
 
         await asyncio.sleep(5)
