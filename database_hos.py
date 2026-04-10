@@ -7,22 +7,33 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-user = os.getenv('hos_USER')
-password = os.getenv('hos_PASS') 
-host = os.getenv('hos_HOST')
-port = os.getenv('hos_PORT')
-name = os.getenv('hos_NAME')
+def get_env(name: str):
+    value = os.getenv(name)
+    if value is None:
+        raise RuntimeError(f"{name} is missing")
+    return value
 
 
-safe_password = urllib.parse.quote_plus(password)
+user = get_env('hos_USER')
+password = get_env('hos_PASS')
+host = get_env('hos_HOST')
+port = get_env('hos_PORT')
+name = get_env('hos_NAME')
 
+safe_password = urllib.parse.quote_plus(str(password))
 
 DB_URL = f"mysql+pymysql://{user}:{safe_password}@{host}:{port}/{name}"
 
-
 engine = create_engine(DB_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
 Base = declarative_base()
+
 
 def get_db():
     db = SessionLocal()
