@@ -4,9 +4,10 @@ from sqlalchemy import text
 from database import get_db
 
 router = APIRouter(
-    prefix="/Power",
-    tags=["power"]
+    prefix="/Power", tags=["power"]
 )
+
+# ของ gennarater เหมือนของ car รอ พอร์มนิ่งก่อน
 
 # -- gennarater 1 
 # -- gennarater 2
