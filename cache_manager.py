@@ -7,7 +7,7 @@ from sqlalchemy import text
 from database import SessionLocal
 
 # ==========================================================
-# Redis Connection (ศูนย์กลางการเชื่อมต่อ Redis ของทั้งระบบ)
+# Redis Connection
 # ==========================================================
 redis_client = redis.Redis(
     host=os.getenv("REDIS_HOST", "localhost"),
@@ -16,25 +16,15 @@ redis_client = redis.Redis(
     decode_responses=True
 )
 
-# ชื่อ Channel สำหรับ Pub/Sub (ใช้เป็นค่าคงที่ เพื่อให้ทุกไฟล์อ้างอิงตรงกัน)
 CHANNEL_DASHBOARD = "dashboard_events"
-
-# ชื่อ Key สำหรับเก็บ Cache ล่าสุด
 KEY_DASHBOARD_CACHE = "dashboard_full_cache"
-
-# URL สำหรับดึงข้อมูลน้ำมันรถจาก Google Sheets
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vROk5cTxHtrHUXSuS7dSAQ3kdRgj7GcHs-c1YdWXsFQ52ZURrCugyRNdjyT0Qrzxj91oUQxdpRl69e2/pub?output=csv"
 
 
 # ==========================================================
-# Helper: ดึงข้อมูลจาก Redis Cache (ให้ Routers เรียกใช้)
+# Helper: ดึงข้อมูลจาก Redis Cache
 # ==========================================================
 def get_cached_data(section: str = None) -> dict | None:
-    """
-    ดึงข้อมูลจาก Redis Cache
-    - ถ้าไม่ระบุ section จะคืนข้อมูลทั้งหมด
-    - ถ้าระบุ section (เช่น 'opd_clinics', 'technical_services') จะคืนเฉพาะส่วนนั้น
-    """
     raw = redis_client.get(KEY_DASHBOARD_CACHE)
     if not raw:
         return None
@@ -45,15 +35,13 @@ def get_cached_data(section: str = None) -> dict | None:
 
 
 # ==========================================================
-# Fuel Data: ดึงข้อมูลจาก Google Sheets แบบ Async
+# Fuel Data
 # ==========================================================
 async def fetch_fuel_data():
-    """ดึงข้อมูลจาก Google Sheets แบบเบื้องหลัง เพื่อไม่ให้บล็อกการทำงานหลัก"""
     try:
         res = await asyncio.to_thread(requests.get, SHEET_URL, timeout=10)
         res.encoding = "utf-8"
         lines = res.text.strip().split("\n")
-
         if len(lines) > 1:
             last = lines[-1].split(",")
             return {
@@ -70,8 +58,24 @@ async def fetch_fuel_data():
 
 
 # ==========================================================
-# Master Data: รายการห้องตรวจ OPD (ใช้ร่วมกันทั้งระบบ)
+# Master Data
 # ==========================================================
+
+# ห้องที่ใช้นับยอด OPD Total (header)
+OPD_TOTAL_ROOMS = (
+    '010',  # จุดซักประวัติผู้ป่วยนอก
+    '062',  # จุดซักประวัติผู้ป่วยนอก (นัด)
+    '005',  # ห้องทันตกรรม
+    '041',  # แพทย์แผนไทย
+    '042',  # กายภาพ
+    '109',  # จุดซักประวัติผู้ป่วย (สูติกรรม)
+    '110',  # จุดซักประวัติผู้ป่วย (ศัลยกรรม)
+    '111',  # จุดซักประวัติผู้ป่วย (อายุรกรรม)
+    '001',  # ความดัน
+    '002',  # เบาหวาน
+)
+
+# ห้องที่แสดงในตาราง
 MASTER_ROOMS = [
     {"code": "010", "name": "จุดซักประวัติผู้ป่วยนอก"},
     {"code": "062", "name": "จุดซักประวัติผู้ป่วยนอก (นัด)"},
@@ -90,29 +94,33 @@ MASTER_ROOMS = [
 
 
 # ==========================================================
-# Background Worker: Query DB → SET Redis → PUBLISH Event
-# รันเป็น asyncio.Task ใน Background ทุก 5 วินาที
+# Background Worker
 # ==========================================================
 async def update_redis_cache():
-    """Worker หลักที่ดึงข้อมูลจาก Database ทุก 5 วินาที แล้ว Publish ลง Redis"""
     print("[Cache Worker] เริ่มทำงาน... (ดึงข้อมูลทุก 5 วินาที)")
     while True:
         db = SessionLocal()
         try:
             # ==========================================
-            # 1. ข้อมูลระบบภาพรวม (จำนวนผู้รับบริการวันนี้)
+            # 1. ยอด OPD Total (เฉพาะห้องที่กำหนด)
             # ==========================================
-            # ใหม่ — นับจาก opd_queue แทน (Unique HN วันนี้)
-            sys_sql = text("SELECT COUNT(DISTINCT hn) FROM opd_queue WHERE date = CURDATE()")
-            sys_res = db.execute(sys_sql).fetchone()
+            sys_sql = text("""
+                SELECT
+                    COUNT(DISTINCT hn) AS opd_total,
+                    COUNT(DISTINCT CASE WHEN room_code = '062' THEN hn END) AS appointment,
+                    COUNT(DISTINCT CASE WHEN room_code != '062' THEN hn END) AS walk_in
+                FROM opd_queue
+                WHERE date = CURDATE()
+                AND room_code IN :rooms
+            """)
+            sys_res = db.execute(sys_sql, {"rooms": OPD_TOTAL_ROOMS}).fetchone()
             total_services = int(sys_res[0]) if sys_res else 0
 
             # ==========================================
-            # 2. ข้อมูลห้องตรวจ OPD
+            # 2. ข้อมูลห้องตรวจ OPD (ตาราง)
             # ==========================================
             target_codes = tuple(room["code"] for room in MASTER_ROOMS)
 
-            # คิวรี 1: รายละเอียดแต่ละห้อง
             opd_rooms_sql = text("""
                 SELECT 
                     q.room_code,
@@ -144,64 +152,55 @@ async def update_redis_cache():
                         "appointment": 0, "walk_in": 0, "total": 0, "finished": 0, "waiting": 0
                     })
 
-            # คิวรี 2: ยอดผู้ป่วย OPD แบบ Unique + Header
-            opd_header_sql = text("""
-                SELECT 
-                    COUNT(DISTINCT hn) AS opd_total,
-                    COUNT(DISTINCT CASE WHEN room_code = '062' THEN hn END) AS appointment,
-                    COUNT(DISTINCT CASE WHEN room_code != '062' THEN hn END) AS walk_in
-                FROM opd_queue 
-                WHERE date = CURDATE()
-            """)
-            opd_header_res = db.execute(opd_header_sql).fetchone()
+            # ==========================================
+            # 3. OPD Header (ใช้ยอดจาก sys_res เดิมได้เลย)
+            # ==========================================
             opd_header = {
-                "opd_total": int(opd_header_res[0] or 0),
-                "appointment": int(opd_header_res[1] or 0),
-                "walk_in": int(opd_header_res[2] or 0),
+                "opd_total":   int(sys_res[0] or 0),
+                "appointment": int(sys_res[1] or 0),
+                "walk_in":     int(sys_res[2] or 0),
             }
 
             # ==========================================
-            # 3. แผนกเทคนิค (Xray, Lab, Pharmacy, Finance)
+            # 4. แผนกเทคนิค
             # ==========================================
             tech_results = {}
 
-            # 3.1 Xray & Lab
             for dept in ["xray_queue", "lab_queue"]:
                 sql = text(f"""
-                    SELECT COUNT(*), 
-                           SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END), 
-                           SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END) 
+                    SELECT COUNT(*),
+                           SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END)
                     FROM {dept} WHERE date = CURDATE()
                 """)
                 res = db.execute(sql).fetchone()
                 tech_results[dept] = {
-                    "all": int(res[0] or 0),
-                    "waiting": int(res[1] or 0),
+                    "all":      int(res[0] or 0),
+                    "waiting":  int(res[1] or 0),
                     "finished": int(res[2] or 0),
                 }
 
-            # 3.2 Pharmacy & Finance
             for dept in ["pharmacy_queue", "finance_queue"]:
                 sql = text(f"""
-                    SELECT COUNT(*), 
-                           SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END), 
-                           SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END) 
+                    SELECT COUNT(*),
+                           SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
                     FROM {dept} WHERE date = CURDATE()
                 """)
                 res = db.execute(sql).fetchone()
                 tech_results[dept] = {
-                    "all": int(res[0] or 0),
+                    "all":      int(res[0] or 0),
                     "finished": int(res[1] or 0),
-                    "waiting": int(res[2] or 0),
+                    "waiting":  int(res[2] or 0),
                 }
 
             # ==========================================
-            # 4. ข้อมูลระบบอื่นๆ (น้ำมันรถ จาก Google Sheets)
+            # 5. น้ำมันรถ
             # ==========================================
             fuel_data = await fetch_fuel_data()
 
             # ==========================================
-            # 5. ประกอบร่าง JSON ทั้งหมด
+            # 6. ประกอบ JSON
             # ==========================================
             dashboard_data = {
                 "system": {
@@ -212,10 +211,10 @@ async def update_redis_cache():
                     "rooms": final_rooms,
                 },
                 "technical_services": {
-                    "xray": tech_results["xray_queue"],
-                    "lab": tech_results["lab_queue"],
+                    "xray":     tech_results["xray_queue"],
+                    "lab":      tech_results["lab_queue"],
                     "pharmacy": tech_results["pharmacy_queue"],
-                    "finance": tech_results["finance_queue"],
+                    "finance":  tech_results["finance_queue"],
                 },
                 "car": {
                     "fuel_latest": fuel_data,
@@ -224,9 +223,6 @@ async def update_redis_cache():
 
             json_data = json.dumps(dashboard_data, ensure_ascii=False)
 
-            # ==========================================
-            # 6. SET ลง Redis + PUBLISH สัญญาณ
-            # ==========================================
             redis_client.set(KEY_DASHBOARD_CACHE, json_data)
             redis_client.publish(CHANNEL_DASHBOARD, json_data)
 
