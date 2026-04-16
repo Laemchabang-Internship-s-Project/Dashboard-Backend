@@ -105,7 +105,8 @@ async def update_redis_cache():
 
         hos_data = {
             "walk_in": 0, "appointment": 0, "referIn": 0,
-            "ems": 0, "telemed": 0, "kiosk": 0
+            "ems": 0, "telemed": 0, "kiosk": 0,
+            "drug_delivery": 0
         }
 
         opd_total = appointment = walk_in = 0
@@ -145,6 +146,16 @@ async def update_redis_cache():
                     hos_data["telemed"]      = int(hos_res[4] or 0)
                     hos_data["kiosk"]        = int(hos_res[5] or 0)
                     hos_data["go_home"]      = int(hos_res[6] or 0)
+                
+                delivery_sql = text("""
+                    SELECT COUNT(DISTINCT vn) AS total_delivery
+                    FROM opitemrece
+                    WHERE icode IN ('3907489', '3907018', '3907508')
+                      AND vstdate = CURDATE()
+                """)
+                delivery_res = db_hos.execute(delivery_sql).fetchone()
+                if delivery_res:
+                    hos_data["drug_delivery"] = int(delivery_res[0] or 0)
         except Exception as e:
             print(f"[Cache Worker] HOSxP Error: {e}")
 
@@ -351,7 +362,8 @@ async def update_redis_cache():
                     "hos_kiosk":            hos_data["kiosk"],
                     "hos_go_home":          hos_data.get("go_home", 0),
                     "total_walkin":         total_walkin_kiosk,
-                    "total_OPD":            total_hos_opd
+                    "total_OPD":            total_hos_opd,
+                    "total_drug_delivery":  hos_data["drug_delivery"]
                 },
                 "summary": {
                     "avg_wait_examination": avg_wait_exam_total
