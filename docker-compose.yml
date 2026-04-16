@@ -41,6 +41,7 @@ services:
       # Override REDIS_HOST ให้ชี้ไปที่ container redis (ไม่ใช่ localhost)
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - TZ=Asia/Bangkok
     depends_on:
       redis:
         condition: service_healthy

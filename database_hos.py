@@ -24,7 +24,13 @@ safe_password = urllib.parse.quote_plus(str(password))
 
 DB_URL = f"mysql+pymysql://{user}:{safe_password}@{host}:{port}/{name}"
 
-engine = create_engine(DB_URL, pool_pre_ping=True)
+engine = create_engine(
+    DB_URL, 
+    pool_pre_ping=True,  
+    pool_size=5,         
+    max_overflow=10,     
+    pool_recycle=1800    # รีเซ็ต/สร้าง Connection ใหม่ทุกๆ 30 นาที ป้องกัน Database สั่งตัดการเชื่อมต่อที่ทิ้งไว้นานเกิน
+)
 
 SessionLocal = sessionmaker(
     autocommit=False,
