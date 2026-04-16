@@ -116,7 +116,10 @@ async def fuel_backfill(
     if not payload.records:
         raise HTTPException(status_code=400, detail="ไม่มีข้อมูล")
 
-    # Push ทีละ record จากใหม่ → เก่า (lpush ทำให้ใหม่อยู่ index 0)
+    # ✅ ล้าง List เก่าก่อนเสมอ — ป้องกัน duplicate ถ้ารันซ้ำ
+    await redis_client.delete(KEY_FUEL_HISTORY)
+
+    # Push ทีละ record จากเก่า → ใหม่ (lpush ทำให้ใหม่อยู่ index 0)
     records_reversed = list(reversed(payload.records))
     for r in records_reversed:
         await redis_client.lpush(KEY_FUEL_HISTORY, json.dumps(r, ensure_ascii=False))
