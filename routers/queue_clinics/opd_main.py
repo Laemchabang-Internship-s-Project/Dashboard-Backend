@@ -12,13 +12,11 @@ router = APIRouter(
 
 
 @router.get("/summary")
-def get_rooms_summary():
+async def get_rooms_summary():
     """
     ดึงข้อมูลสรุป OPD ทั้งหมด (อ่านจาก Redis Cache)
-    - header: ยอดรวม OPD แบบ Unique
-    - rooms: รายละเอียดแต่ละห้องตรวจ
     """
-    data = get_cached_data("opd_clinics")
+    data = await get_cached_data("opd_clinics")
     if not data:
         raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม กรุณารอสักครู่")
     return data
@@ -27,38 +25,30 @@ def get_rooms_summary():
 @router.get("/summary/stream")
 async def stream_opd_summary():
     """
-    SSE Endpoint สำหรับรับข้อมูล OPD แบบ Real-time
-    - ส่งข้อมูลชุดแรกทันทีที่ต่อเข้ามา
-    - หลังจากนั้นรอรับสัญญาณ Publish จาก cache_manager ทุก 5 วินาที
-    - ส่งเฉพาะ section 'opd_clinics' ไปให้ Frontend
+    SSE Endpoint สำหรับรับข้อมูล OPD แบบ Real-time เฉพาะส่วน
     """
     async def event_generator():
         pubsub = redis_client.pubsub()
-        pubsub.subscribe(CHANNEL_DASHBOARD)
+        await pubsub.subscribe(CHANNEL_DASHBOARD)
         try:
-            # ส่งข้อมูลชุดแรกทันที
-            initial = get_cached_data("opd_clinics")
+            # ส่งข้อมูลชุดแรกทันทีที่ต่อเข้ามา
+            initial = await get_cached_data("opd_clinics")
             if initial:
                 yield f"data: {json.dumps(initial, ensure_ascii=False)}\n\n"
 
-            # รอรับสัญญาณจาก Redis Pub/Sub
-            while True:
-                message = pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=1.0,
-                )
+            # รอรับสัญญาณจาก Redis Pub/Sub แบบ Async
+            async for message in pubsub.listen():
                 if message and message["type"] == "message":
-                    # แกะเฉพาะ section ที่ต้องการ
+                    # แกะเฉพาะส่วน opd_clinics ออกมาจากข้อมูลเต็ม
                     full_data = json.loads(message["data"])
                     opd_data = full_data.get("opd_clinics", {})
                     yield f"data: {json.dumps(opd_data, ensure_ascii=False)}\n\n"
-                else:
-                    await asyncio.sleep(0.5)
+                    
         except asyncio.CancelledError:
             pass
         finally:
-            pubsub.unsubscribe(CHANNEL_DASHBOARD)
-            pubsub.close()
+            await pubsub.unsubscribe(CHANNEL_DASHBOARD)
+            await pubsub.close()
 
     return StreamingResponse(
         event_generator(),

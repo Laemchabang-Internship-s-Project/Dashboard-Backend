@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 
 from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
-from utils.security import get_api_key
+# หมายเหตุ: ตรวจสอบว่ามีไฟล์ security.py ในโฟลเดอร์ utils หากใช้งาน API Key
+# from utils.security import get_api_key
 
 # --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
 from cache_manager import (
@@ -31,7 +32,6 @@ load_dotenv()
 
 # ==========================================================
 # Lifespan: จัดการ Startup / Shutdown ของ App
-# (ใช้แทน @app.on_event ที่ deprecated ใน FastAPI เวอร์ชันใหม่)
 # ==========================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,12 +49,11 @@ app = FastAPI(
     version="2.0.0",
     description="ระบบ Dashboard โรงพยาบาลแหลมฉบัง (Real-time via Redis Pub/Sub)",
     lifespan=lifespan,
-    # dependencies=[Depends(get_api_key)],
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ตอน dev ใช้ * ไปก่อน (prod ควรล็อก domain)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,34 +67,26 @@ app.add_middleware(
 async def dashboard_stream():
     """
     Endpoint สำหรับเชื่อมต่อ SSE (Server-Sent Events) แบบ Real-time
-    - เมื่อต่อเข้ามาจะได้รับข้อมูลชุดแรกทันที
-    - หลังจากนั้นจะรอรับข้อมูลอัปเดตผ่าน Redis Pub/Sub ทุก 5 วินาที
     """
     async def event_generator():
         pubsub = redis_client.pubsub()
-        pubsub.subscribe(CHANNEL_DASHBOARD)
+        await pubsub.subscribe(CHANNEL_DASHBOARD)
         try:
-            # ส่งข้อมูลชุดแรกทันทีที่ต่อเข้ามา (ไม่ต้องรอ 5 วินาที)
-            initial_data = redis_client.get("dashboard_full_cache")
+            # ส่งข้อมูลชุดแรกทันทีที่ต่อเข้ามา
+            initial_data = await redis_client.get("dashboard_full_cache")
             if initial_data:
                 yield f"data: {initial_data}\n\n"
 
-            # รอรับสัญญาณจาก Pub/Sub (ไม่ Polling, ไม่โหลด CPU)
-            while True:
-                message = pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=1.0,
-                )
+            # รอรับสัญญาณจาก Pub/Sub แบบ Async
+            async for message in pubsub.listen():
                 if message and message["type"] == "message":
                     yield f"data: {message['data']}\n\n"
-                else:
-                    # ให้ asyncio มีโอกาสทำงานอื่น (ป้องกัน blocking)
-                    await asyncio.sleep(0.5)
+                    
         except asyncio.CancelledError:
             pass
         finally:
-            pubsub.unsubscribe(CHANNEL_DASHBOARD)
-            pubsub.close()
+            await pubsub.unsubscribe(CHANNEL_DASHBOARD)
+            await pubsub.close()
 
     return StreamingResponse(
         event_generator(),
@@ -103,18 +94,18 @@ async def dashboard_stream():
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # ป้องกัน Nginx buffer SSE
+            "X-Accel-Buffering": "no",
         },
     )
 
 
 # ==========================================================
-# REST Endpoint: ดึงข้อมูล Dashboard แบบ Snapshot (อ่านจาก Redis)
+# REST Endpoint: ดึงข้อมูล Dashboard แบบ Snapshot
 # ==========================================================
 @app.get("/api/dashboard/snapshot", tags=["Real-time"])
-def dashboard_snapshot():
+async def dashboard_snapshot():
     """ดึงข้อมูล Dashboard ทั้งหมดแบบครั้งเดียว (อ่านจาก Redis Cache)"""
-    data = get_cached_data()
+    data = await get_cached_data()
     if not data:
         raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม กรุณารอสักครู่")
     return data
@@ -123,18 +114,15 @@ def dashboard_snapshot():
 # ==========================================================
 # Router Registration
 # ==========================================================
-# --- กลุ่มที่ 1: ระบบซัพพอร์ต ---
-# app.include_router(Power.router)
 app.include_router(Car.router)
-# app.include_router(WFH.router)
 
-# --- กลุ่มที่ 2: แผนกเทคนิค ---
+# แผนกเทคนิค
 app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"])
 app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"])
 app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"])
 app.include_router(financial.router, prefix="/api/technical/finance", tags=["Technical Services"])
 
-# --- กลุ่มที่ 3: ห้องตรวจ OPD ---
+# ห้องตรวจ OPD
 app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"])
 
 
@@ -142,8 +130,7 @@ app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"])
 # System Endpoints
 # ==========================================================
 @app.get("/api/system/test-neoq-db", tags=["System"])
-def test_db_connection(db: Session = Depends(get_neoq_db)):
-    """ทดสอบการเชื่อมต่อ Database"""
+def test_neoq_db_connection(db: Session = Depends(get_neoq_db)):
     try:
         db.execute(text("SELECT 1"))
         return {"status": "success", "message": "Connected to neoq Database"}
@@ -151,8 +138,7 @@ def test_db_connection(db: Session = Depends(get_neoq_db)):
         raise HTTPException(status_code=500, detail=f"DB Connection Error: {str(e)}")
 
 @app.get("/api/system/test-hos-db", tags=["System"])
-def test_db_connection(db: Session = Depends(get_hos_db)):
-    """ทดสอบการเชื่อมต่อ Database"""
+def test_hos_db_connection(db: Session = Depends(get_hos_db)):
     try:
         db.execute(text("SELECT 1"))
         return {"status": "success", "message": "Connected to hos Database"}
@@ -160,19 +146,17 @@ def test_db_connection(db: Session = Depends(get_hos_db)):
         raise HTTPException(status_code=500, detail=f"DB Connection Error: {str(e)}")
 
 @app.get("/api/system/test-redis", tags=["System"])
-def test_redis_connection():
-    """ทดสอบการเชื่อมต่อ Redis"""
+async def test_redis_connection():
     try:
-        redis_client.ping()
+        await redis_client.ping()
         return {"status": "success", "message": "Connected to Redis"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Redis Connection Error: {str(e)}")
 
 
 @app.get("/api/system/total-services", tags=["System"])
-def get_total_services():
-    """ดึงจำนวนผู้รับบริการวันนี้ (จาก Redis Cache แทน DB ตรง)"""
-    data = get_cached_data("system")
+async def get_total_services():
+    data = await get_cached_data("system")
     if not data:
         raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม")
     return {"today_total": data.get("today_total_services", 0)}
