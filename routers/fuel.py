@@ -119,18 +119,21 @@ async def fuel_backfill(
     # ✅ ล้าง List เก่าก่อนเสมอ — ป้องกัน duplicate ถ้ารันซ้ำ
     await redis_client.delete(KEY_FUEL_HISTORY)
 
-    # Push ทีละ record จากเก่า → ใหม่ (lpush ทำให้ใหม่อยู่ index 0)
-    records_reversed = list(reversed(payload.records))
-    for r in records_reversed:
+    # Push ทีละ record ลำดับจาก Sheet คือเก่า -> ใหม่
+    # ใช้ lpush เข้าไปเรื่อยๆ ท้ายสุดข้อมูลใหม่สุดจะถูกดันไปอยู่หน้าสุด (index 0)
+    for r in payload.records:
         await redis_client.lpush(KEY_FUEL_HISTORY, json.dumps(r, ensure_ascii=False))
+
 
     # Trim เก็บไว้ไม่เกิน FUEL_HISTORY_MAX
     await redis_client.ltrim(KEY_FUEL_HISTORY, 0, FUEL_HISTORY_MAX - 1)
 
-    # อัป latest = record ล่าสุด (index 0 หลัง push)
+    # อัป latest = record ล่าสุด (index 0 หลัง push) ลง KEY_FUEL_CACHE
+    # ไม่เรียก update_fuel_cache เพื่อป้องกันการถูกดัน(lpush) ซ้ำอีก 1 รอบ
     latest_raw = await redis_client.lindex(KEY_FUEL_HISTORY, 0)
     if latest_raw:
-        await update_fuel_cache(json.loads(latest_raw))
+        from cache_manager import KEY_FUEL_CACHE
+        await redis_client.set(KEY_FUEL_CACHE, latest_raw)
 
     total = await redis_client.llen(KEY_FUEL_HISTORY)
     return {
