@@ -2,8 +2,6 @@ import asyncio
 import json
 import redis.asyncio as redis
 import os
-import requests
-import time
 from sqlalchemy import text, bindparam
 from database_neoq import SessionLocal as SessionNEOQ
 from database_hos import SessionLocal as SessionHOS
@@ -20,12 +18,9 @@ redis_client = redis.Redis(
 
 CHANNEL_DASHBOARD = "dashboard_events"
 KEY_DASHBOARD_CACHE = "dashboard_full_cache"
-
-SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vROk5cTxHtrHUXSuS7dSAQ3kdRgj7GcHs-c1YdWXsFQ52ZURrCugyRNdjyT0Qrzxj91oUQxdpRl69e2/pub?output=csv"
-
-LAST_FUEL_FETCH = 0
-CACHED_FUEL_DATA = None
-FUEL_FETCH_INTERVAL = 60
+KEY_FUEL_CACHE   = "fuel_latest"
+KEY_FUEL_HISTORY = "fuel_history"   # Redis List เก็บ 100 รายการล่าสุด
+FUEL_HISTORY_MAX = 100
 
 # ==========================================================
 # Helper: Redis
@@ -39,29 +34,39 @@ async def get_cached_data(section: str = None):
 
 
 # ==========================================================
-# Fuel Data
+# Fuel Data — Webhook-driven (ไม่ polling อีกต่อไป)
 # ==========================================================
-async def fetch_fuel_data():
+async def update_fuel_cache(fuel_data: dict) -> bool:
+    """
+    รับข้อมูลจาก webhook แล้วอัป Redis:
+      - fuel_latest  : record ล่าสุด (GET string)
+      - fuel_history : list 100 รายการล่าสุด (LPUSH + LTRIM)
+      - dashboard_full_cache : patch + publish SSE
+    """
     try:
-        res = await asyncio.to_thread(requests.get, SHEET_URL, timeout=10)
-        res.encoding = "utf-8"
-        lines = res.text.strip().split("\n")
+        json_str = json.dumps(fuel_data, ensure_ascii=False)
 
-        if len(lines) > 1:
-            last = lines[-1].split(",")
-            return {
-                "date": last[0].strip('"'),
-                "time": last[1].strip('"'),
-                "shift": last[2].strip('"'),
-                "type": last[3].strip('"'),
-                "fuel_level": float(last[4].strip('"')),
-                "mileage": float(last[5].strip('"')),
-            }
+        # 1. เก็บ record ล่าสุด
+        await redis_client.set(KEY_FUEL_CACHE, json_str)
 
+        # 2. Push เข้า List (ใหม่สุดอยู่ index 0) แล้วตัดให้เหลือ 100
+        await redis_client.lpush(KEY_FUEL_HISTORY, json_str)
+        await redis_client.ltrim(KEY_FUEL_HISTORY, 0, FUEL_HISTORY_MAX - 1)
+
+        # 3. Patch dashboard cache + publish SSE
+        raw = await redis_client.get(KEY_DASHBOARD_CACHE)
+        if raw:
+            full = json.loads(raw)
+            full["car"] = {"fuel_latest": fuel_data}
+            patched = json.dumps(full, ensure_ascii=False)
+            await redis_client.set(KEY_DASHBOARD_CACHE, patched)
+            await redis_client.publish(CHANNEL_DASHBOARD, patched)
+
+        print(f"[Fuel Webhook] อัปเดตสำเร็จ: {fuel_data}")
+        return True
     except Exception as e:
-        print(f"[Cache Worker] Fuel Error: {e}")
-
-    return None
+        print(f"[Fuel Webhook] Error: {e}")
+        return False
 
 
 # ==========================================================
@@ -92,17 +97,14 @@ MASTER_ROOMS = [
 # Background Worker
 # ==========================================================
 async def update_redis_cache():
-    global LAST_FUEL_FETCH, CACHED_FUEL_DATA
-    print("[Cache Worker] เริ่มทำงาน... (อัปเดตระบบคิวทุก 5 วิ, น้ำมันทุก 60 วิ)")
+    print("[Cache Worker] เริ่มทำงาน... (อัปเดตระบบคิวทุก 5 วิ)")
 
     while True:
         # ==========================================
-        # 1. Google Sheet (Rate Limit Protection)
+        # 1. โหลด fuel จาก Redis key แยก (set โดย webhook)
         # ==========================================
-        current_time = time.time()
-        if current_time - LAST_FUEL_FETCH > FUEL_FETCH_INTERVAL:
-            CACHED_FUEL_DATA = await fetch_fuel_data()
-            LAST_FUEL_FETCH = current_time
+        fuel_raw = await redis_client.get(KEY_FUEL_CACHE)
+        cached_fuel = json.loads(fuel_raw) if fuel_raw else None
 
         # ==========================================
         # 2. Default variables
@@ -121,7 +123,7 @@ async def update_redis_cache():
             "pharmacy_queue": {"all": 0, "waiting": 0, "finished": 0},
             "finance_queue":  {"all": 0, "waiting": 0, "finished": 0},
         }
-
+    
         # ==========================================
         # 3. HOSxP Query
         # ==========================================
@@ -292,7 +294,7 @@ async def update_redis_cache():
                     "finance":  tech["finance_queue"],
                 },
                 "car": {
-                    "fuel_latest": CACHED_FUEL_DATA,
+                    "fuel_latest": cached_fuel,
                 },
             }
 

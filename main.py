@@ -22,9 +22,9 @@ from cache_manager import (
     CHANNEL_DASHBOARD,
 )
 
-from routers import Car
 from routers.queue_technical import Xray, Lab, Pharmacy, financial
 from routers.queue_clinics import opd_main
+from routers import fuel
 
 
 load_dotenv()
@@ -114,7 +114,9 @@ async def dashboard_snapshot():
 # ==========================================================
 # Router Registration
 # ==========================================================
-app.include_router(Car.router)
+
+# Fuel Webhook (รับ trigger จาก Google Apps Script)
+app.include_router(fuel.router)
 
 # แผนกเทคนิค
 app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"])
