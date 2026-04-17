@@ -97,6 +97,7 @@ async def update_redis_cache():
     print("[Cache Worker] เริ่มทำงาน... (อัปเดตระบบคิวทุก 5 วิ)")
 
     while True:
+        wait_time = 5
         # ==========================================
         # 1. โหลด fuel จาก Redis key แยก (set โดย webhook)
         # ==========================================
@@ -158,6 +159,7 @@ async def update_redis_cache():
                     hos_data["drug_delivery"] = int(delivery_res[0] or 0)
         except Exception as e:
             print(f"[Cache Worker] HOSxP Error: {e}")
+            wait_time = 2
 
         # --- 2. NEOQ Query ---
         try:
@@ -343,6 +345,7 @@ async def update_redis_cache():
 
         except Exception as e:
             print(f"[Cache Worker] NEOQ Connection Error: {e}")
+            wait_time = 2
 
         # --- 3. ASSEMBLE JSON & PUBLISH ---
         try:
@@ -393,8 +396,8 @@ async def update_redis_cache():
             json_data = json.dumps(data, ensure_ascii=False)
             await redis_client.set(KEY_DASHBOARD_CACHE, json_data)
             await redis_client.publish(CHANNEL_DASHBOARD, json_data)
-
+            wait_time = 5
         except Exception as e:
             print(f"[Cache Worker] Redis Error: {e}")
-
-        await asyncio.sleep(5)
+            wait_time = 2
+        await asyncio.sleep(wait_time)
