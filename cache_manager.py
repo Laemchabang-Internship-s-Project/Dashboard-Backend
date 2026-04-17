@@ -147,11 +147,11 @@ async def update_redis_cache():
                     hos_data["telemed"]      = int(hos_res[4] or 0)
                     hos_data["kiosk"]        = int(hos_res[5] or 0)
                     hos_data["go_home"]      = int(hos_res[6] or 0)
-                
+                #3907489 = DRUGP-ค่าบริการจัดส่งยาไปยังผู้ป่วยที่บ้าน 50 3907018=ค่าจัดส่งยาทางไปรษณีย์ 3907508=ค่าจัดส่งยาทางไปรษณีย์ (ชำระเงิน)
                 delivery_sql = text("""
                     SELECT COUNT(DISTINCT vn) AS total_delivery
                     FROM opitemrece
-                    WHERE icode IN ('3907489', '3907018', '3907508')
+                    WHERE icode IN ('3907018', '3907508') 
                       AND vstdate = CURDATE()
                 """)
                 delivery_res = db_hos.execute(delivery_sql).fetchone()
