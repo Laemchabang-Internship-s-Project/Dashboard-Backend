@@ -54,10 +54,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["https://dashboard.lcbh.go.th"],
+    allow_credentials=False,
+    allow_methods=["GET"],
+    allow_headers=["x-api-key", "Content-Type"],
 )
 
 @app.get("/api/dashboard/summary-range", tags=["Filter"])
