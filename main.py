@@ -15,6 +15,8 @@ from database_hos import get_db as get_hos_db
 # หมายเหตุ: ตรวจสอบว่ามีไฟล์ security.py ในโฟลเดอร์ utils หากใช้งาน API Key
 from utils.security import get_api_key
 
+from broadcaster import broadcaster, subscribers, latest_data
+
 # --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
 from cache_manager import (
     update_redis_cache,
@@ -36,14 +38,17 @@ load_dotenv()
 # ==========================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- Startup ---
-    task = asyncio.create_task(update_redis_cache())
-    print("[Main] Cache Worker Task เริ่มทำงานแล้ว")
-    yield
-    # --- Shutdown ---
-    task.cancel()
-    print("[Main] Cache Worker Task หยุดทำงานแล้ว")
+    task_cache = asyncio.create_task(update_redis_cache())
+    task_broadcast = asyncio.create_task(broadcaster())
 
+    print("[Main] Cache + Broadcaster started")
+
+    yield
+
+    task_cache.cancel()
+    task_broadcast.cancel()
+
+    print("[Main] Shutdown complete")
 
 app = FastAPI(
     title="LCBH Dashboard API",
@@ -121,52 +126,34 @@ async def get_summary_range(
 @app.get("/api/dashboard/stream", tags=["Real-time"])
 async def dashboard_stream(
     request: Request,
-    api_key: str = Depends(get_api_key)  # ✅ เปิด auth สำหรับ SSE
+    api_key: str = Depends(get_api_key)
 ):
+    queue = asyncio.Queue()
+    subscribers.add(queue)
+
     async def event_generator():
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(CHANNEL_DASHBOARD)
-
         try:
-            # ✅ ส่ง snapshot ครั้งแรก
-            initial_data = await redis_client.get("dashboard_full_cache")
-            if initial_data:
-                if isinstance(initial_data, bytes):
-                    initial_data = initial_data.decode("utf-8")
-
-                yield f"data: {initial_data}\n\n"
+            # ส่ง snapshot ล่าสุด
+            if latest_data:
+                yield f"data: {latest_data}\n\n"
 
             while True:
-                # ถ้า client disconnect → stop loop ทันที
                 if await request.is_disconnected():
                     print("🔌 Client disconnected")
                     break
 
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=1.0
-                )
-
-                if message:
-                    data = message["data"]
-
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15)
 
                     yield f"data: {data}\n\n"
-                else:
-                    # keep-alive กัน proxy ตัด connection
+
+                except asyncio.TimeoutError:
+                    # keep-alive
                     yield ": ping\n\n"
 
-                await asyncio.sleep(0.1)
-
-        except asyncio.CancelledError:
-            print("🔌 SSE cancelled")
-
         finally:
-            await pubsub.unsubscribe(CHANNEL_DASHBOARD)
-            await pubsub.close()
-            print("🧹 Redis pubsub closed")
+            subscribers.discard(queue)
+            print("🧹 client removed")
 
     return StreamingResponse(
         event_generator(),
@@ -174,10 +161,7 @@ async def dashboard_stream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            # ปิด buffering reverse proxy
             "X-Accel-Buffering": "no",
-            #กัน proxy แปลง content
-            "Content-Type": "text/event-stream",
         },
     )
 

@@ -6,3 +6,4 @@ cryptography
 requests
 redis
 python-dotenv
+broadcaster[redis]
