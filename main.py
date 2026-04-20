@@ -138,6 +138,7 @@ async def dashboard_stream(
                 yield f"data: {latest_data}\n\n"
 
             while True:
+                # disconnect check
                 if await request.is_disconnected():
                     print("🔌 Client disconnected")
                     break
@@ -145,10 +146,16 @@ async def dashboard_stream(
                 try:
                     data = await asyncio.wait_for(queue.get(), timeout=15)
 
+                    # รองรับ bytes / dict / str
+                    if isinstance(data, (dict, list)):
+                        data = json.dumps(data)
+                    elif isinstance(data, bytes):
+                        data = data.decode("utf-8")
+
                     yield f"data: {data}\n\n"
 
                 except asyncio.TimeoutError:
-                    # keep-alive
+                    # keep-alive กัน nginx/apache ตัด
                     yield ": ping\n\n"
 
         finally:
@@ -162,6 +169,7 @@ async def dashboard_stream(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Content-Type": "text/event-stream",
         },
     )
 

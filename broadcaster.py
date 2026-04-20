@@ -4,27 +4,27 @@ from cache_manager import redis_client, CHANNEL_DASHBOARD
 subscribers = set()
 latest_data = None
 
-
 async def broadcaster():
+    global latest_data
+
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(CHANNEL_DASHBOARD)
 
-    global latest_data
+    async for msg in pubsub.listen():
+        if msg and msg["type"] == "message":
+            data = msg["data"]
 
-    async for message in pubsub.listen():
-        if message["type"] != "message":
-            continue
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
 
-        data = message["data"]
+            latest_data = data
 
-        if isinstance(data, bytes):
-            data = data.decode("utf-8")
+            # broadcast ไปทุก worker
+            dead = set()
+            for q in subscribers:
+                try:
+                    q.put_nowait(data)
+                except:
+                    dead.add(q)
 
-        latest_data = data
-
-        # fan-out ไปทุก client
-        for queue in list(subscribers):
-            try:
-                queue.put_nowait(data)
-            except:
-                pass
+            subscribers.difference_update(dead)
