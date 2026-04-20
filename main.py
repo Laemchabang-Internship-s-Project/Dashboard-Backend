@@ -118,27 +118,41 @@ async def get_summary_range(
 # ==========================================================
 # SSE Endpoint: Stream ข้อมูล Dashboard แบบ Real-time
 # ==========================================================
-@app.get("/api/dashboard/stream", tags=["Real-time"])
+@app.get("/api/dashboard/stream", tags=["Real-time"],)
 async def dashboard_stream():
-    """
-    Endpoint สำหรับเชื่อมต่อ SSE (Server-Sent Events) แบบ Real-time
-    """
+
     async def event_generator():
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(CHANNEL_DASHBOARD)
+
         try:
-            # ส่งข้อมูลชุดแรกทันทีที่ต่อเข้ามา
+            # initial snapshot
             initial_data = await redis_client.get("dashboard_full_cache")
             if initial_data:
                 yield f"data: {initial_data}\n\n"
 
-            # รอรับสัญญาณจาก Pub/Sub แบบ Async
-            async for message in pubsub.listen():
-                if message and message["type"] == "message":
-                    yield f"data: {message['data']}\n\n"
-                    
+            while True:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=1.0
+                )
+
+                if message:
+                    data = message["data"]
+
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+
+                    yield f"data: {data}\n\n"
+                else:
+                    # keep-alive (สำคัญมาก)
+                    yield ": ping\n\n"
+
+                await asyncio.sleep(0.1)
+
         except asyncio.CancelledError:
-            pass
+            print("🔌 SSE client disconnected")
+
         finally:
             await pubsub.unsubscribe(CHANNEL_DASHBOARD)
             await pubsub.close()
@@ -152,7 +166,6 @@ async def dashboard_stream():
             "X-Accel-Buffering": "no",
         },
     )
-
 
 # ==========================================================
 # REST Endpoint: ดึงข้อมูล Dashboard แบบ Snapshot
