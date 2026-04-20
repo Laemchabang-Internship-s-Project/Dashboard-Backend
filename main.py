@@ -50,6 +50,7 @@ app = FastAPI(
     version="2.0.0",
     description="ระบบ Dashboard โรงพยาบาลแหลมฉบัง (Real-time via Redis Pub/Sub)",
     lifespan=lifespan,
+    dependencies=[Depends(get_api_key)]
 )
 
 app.add_middleware(
