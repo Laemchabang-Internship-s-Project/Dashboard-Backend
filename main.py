@@ -2,7 +2,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException , Query
+from fastapi import FastAPI, Depends, HTTPException , Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -49,8 +49,7 @@ app = FastAPI(
     title="LCBH Dashboard API",
     version="2.0.0",
     description="ระบบ Dashboard โรงพยาบาลแหลมฉบัง (Real-time via Redis Pub/Sub)",
-    lifespan=lifespan,
-    dependencies=[Depends(get_api_key)]
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -63,6 +62,7 @@ app.add_middleware(
 
 @app.get("/api/dashboard/summary-range", tags=["Filter"])
 async def get_summary_range(
+    api_key: str = Depends(get_api_key),
     start_date: date = Query(..., description="วันที่เริ่มต้น (YYYY-MM-DD)"),
     end_date: date = Query(..., description="วันที่สิ้นสุด (YYYY-MM-DD)"),
     db_hos: Session = Depends(get_hos_db) # ใช้ Dependency สำหรับต่อ HOSxP
@@ -118,20 +118,30 @@ async def get_summary_range(
 # ==========================================================
 # SSE Endpoint: Stream ข้อมูล Dashboard แบบ Real-time
 # ==========================================================
-@app.get("/api/dashboard/stream", tags=["Real-time"],)
-async def dashboard_stream():
-
+@app.get("/api/dashboard/stream", tags=["Real-time"])
+async def dashboard_stream(
+    request: Request,
+    api_key: str = Depends(get_api_key)  # ✅ เปิด auth สำหรับ SSE
+):
     async def event_generator():
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(CHANNEL_DASHBOARD)
 
         try:
-            # initial snapshot
+            # ✅ ส่ง snapshot ครั้งแรก
             initial_data = await redis_client.get("dashboard_full_cache")
             if initial_data:
+                if isinstance(initial_data, bytes):
+                    initial_data = initial_data.decode("utf-8")
+
                 yield f"data: {initial_data}\n\n"
 
             while True:
+                # ถ้า client disconnect → stop loop ทันที
+                if await request.is_disconnected():
+                    print("🔌 Client disconnected")
+                    break
+
                 message = await pubsub.get_message(
                     ignore_subscribe_messages=True,
                     timeout=1.0
@@ -145,17 +155,18 @@ async def dashboard_stream():
 
                     yield f"data: {data}\n\n"
                 else:
-                    # keep-alive (สำคัญมาก)
+                    # keep-alive กัน proxy ตัด connection
                     yield ": ping\n\n"
 
                 await asyncio.sleep(0.1)
 
         except asyncio.CancelledError:
-            print("🔌 SSE client disconnected")
+            print("🔌 SSE cancelled")
 
         finally:
             await pubsub.unsubscribe(CHANNEL_DASHBOARD)
             await pubsub.close()
+            print("🧹 Redis pubsub closed")
 
     return StreamingResponse(
         event_generator(),
@@ -163,7 +174,10 @@ async def dashboard_stream():
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            # ปิด buffering reverse proxy
             "X-Accel-Buffering": "no",
+            #กัน proxy แปลง content
+            "Content-Type": "text/event-stream",
         },
     )
 
@@ -171,7 +185,9 @@ async def dashboard_stream():
 # REST Endpoint: ดึงข้อมูล Dashboard แบบ Snapshot
 # ==========================================================
 @app.get("/api/dashboard/snapshot", tags=["Real-time"])
-async def dashboard_snapshot():
+async def dashboard_snapshot(
+    api_key: str = Depends(get_api_key)
+):
     """ดึงข้อมูล Dashboard ทั้งหมดแบบครั้งเดียว (อ่านจาก Redis Cache)"""
     data = await get_cached_data()
     if not data:
