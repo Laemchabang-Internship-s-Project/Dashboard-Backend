@@ -1,58 +1,60 @@
+version: "3.9"
+
 services:
   redis:
     image: redis:7-alpine
     container_name: lcbh-redis
-    restart: always
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    networks:
+      - lcbh_network
     deploy:
       resources:
         limits:
-          cpus: '0.50'
+          cpus: "0.50"
           memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"      
-        max-file: "2"      
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
-    networks:
-      - lcbh_network
 
   dashboard-api:
     build: .
     container_name: lcbh-dashboard-api
-    restart: always
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+
     env_file:
       - .env
+
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - TZ=Asia/Bangkok
-    # Prevent memory leak
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TZ: Asia/Bangkok
+      PYTHONUNBUFFERED: 1
+
     depends_on:
       redis:
         condition: service_healthy
+
     networks:
       - lcbh_network
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   lcbh_network:
