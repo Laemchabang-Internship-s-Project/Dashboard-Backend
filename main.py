@@ -13,7 +13,7 @@ from datetime import date
 from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
 # หมายเหตุ: ตรวจสอบว่ามีไฟล์ security.py ในโฟลเดอร์ utils หากใช้งาน API Key
-# from utils.security import get_api_key
+from utils.security import get_api_key
 
 # --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
 from cache_manager import (
@@ -173,13 +173,13 @@ async def dashboard_snapshot():
 app.include_router(fuel.router)
 
 # แผนกเทคนิค
-app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"])
-app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"])
-app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"])
-app.include_router(financial.router, prefix="/api/technical/finance", tags=["Technical Services"])
+app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
+app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
+app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
+app.include_router(financial.router, prefix="/api/technical/finance", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
 
 # ห้องตรวจ OPD
-app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"])
+app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"], dependencies=[Depends(get_api_key)])
 
 
 # ==========================================================
