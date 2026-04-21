@@ -24,9 +24,6 @@ from cache_manager import (
     get_cached_data,
     CHANNEL_DASHBOARD,
 )
-
-from routers.queue_technical import Xray, Lab, Pharmacy, financial
-from routers.queue_clinics import opd_main
 from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
@@ -160,51 +157,40 @@ app.include_router(dashboard.router)
 # Fuel Webhook (รับ trigger จาก Google Apps Script)
 app.include_router(fuel.router)
 
-# แผนกเทคนิค
-app.include_router(Lab.router, prefix="/api/technical/lab", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
-app.include_router(Xray.router, prefix="/api/technical/xray", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
-app.include_router(Pharmacy.router, prefix="/api/technical/pharmacy", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
-app.include_router(financial.router, prefix="/api/technical/finance", tags=["Technical Services"], dependencies=[Depends(get_api_key)])
-
-# ห้องตรวจ OPD
-app.include_router(opd_main.router, prefix="/api/clinics", tags=["OPD Clinics"], dependencies=[Depends(get_api_key)])
-
-
 # ==========================================================
 # System Endpoints
 # ==========================================================
-@app.get("/api/system/test-neoq-db", tags=["System"])
-def test_neoq_db_connection(db: Session = Depends(get_neoq_db)):
-    try:
-        db.execute(text("SELECT 1"))
-        return {"status": "success", "message": "Connected to neoq Database"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB Connection Error: {str(e)}")
+@app.get("/api/system/health", tags=["System"])
+async def health_check(
+    neoq_db: Session = Depends(get_neoq_db),
+    hos_db: Session = Depends(get_hos_db),
+):
+    results = {}
 
-@app.get("/api/system/test-hos-db", tags=["System"])
-def test_hos_db_connection(db: Session = Depends(get_hos_db)):
+    # neoq DB
     try:
-        db.execute(text("SELECT 1"))
-        return {"status": "success", "message": "Connected to hos Database"}
+        neoq_db.execute(text("SELECT 1"))
+        results["neoq_db"] = {"status": "success", "message": "Connected to neoq Database"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB Connection Error: {str(e)}")
+        results["neoq_db"] = {"status": "error", "message": str(e)}
 
-@app.get("/api/system/test-redis", tags=["System"])
-async def test_redis_connection():
+    # hos DB
+    try:
+        hos_db.execute(text("SELECT 1"))
+        results["hos_db"] = {"status": "success", "message": "Connected to hos Database"}
+    except Exception as e:
+        results["hos_db"] = {"status": "error", "message": str(e)}
+
+    # Redis
     try:
         await redis_client.ping()
-        return {"status": "success", "message": "Connected to Redis"}
+        results["redis"] = {"status": "success", "message": "Connected to Redis"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Redis Connection Error: {str(e)}")
+        results["redis"] = {"status": "error", "message": str(e)}
 
-
-@app.get("/api/system/total-services", tags=["System"])
-async def get_total_services():
-    data = await get_cached_data("system")
-    if not data:
-        raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม")
-    return {"today_total": data.get("today_total_services", 0)}
-
+    # overall
+    all_ok = all(v["status"] == "success" for v in results.values())
+    return {"overall": "ok" if all_ok else "degraded", "services": results}
 # ==========================================================
 # Security & Access Control: เช็คเครือข่ายภายในโรงพยาบาล
 # ==========================================================
