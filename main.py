@@ -161,7 +161,7 @@ app.include_router(fuel.router)
 # ==========================================================
 # System Endpoints
 # ==========================================================
-@app.get("/api/system/health", tags=["System"])
+@app.get("/api/system/health", tags=["System"],dependencies=[Depends(get_api_key), Depends(verify_ip)])
 async def health_check(
     neoq_db: Session = Depends(get_neoq_db),
     hos_db: Session = Depends(get_hos_db),
