@@ -41,14 +41,12 @@ async def patch_redis_cache(new_data: dict):
         raw = await redis_client.get(KEY_DASHBOARD_CACHE)
         full_data = json.loads(raw) if raw else {}
 
-        # ประกอบร่าง JSON (ถ้ามี key อยู่แล้วให้ update ข้อมูลข้างใน)
         for key, value in new_data.items():
             if isinstance(value, dict) and key in full_data and isinstance(full_data[key], dict):
                 full_data[key].update(value)
             else:
                 full_data[key] = value
 
-        # ป้องกันกรณีส่วนของรถหายไปตอนเพิ่ง Restart ระบบแล้วยังไม่มี Webhook ยิงมา
         if "car" not in full_data:
             fuel_raw = await redis_client.get(KEY_FUEL_CACHE)
             full_data["car"] = {"fuel_latest": json.loads(fuel_raw) if fuel_raw else None}
@@ -66,14 +64,11 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
     try:
         json_str = json.dumps(fuel_data, ensure_ascii=False)
 
-        # 1. เก็บ record ล่าสุด
         await redis_client.set(KEY_FUEL_CACHE, json_str)
 
-        # 2. Push เข้า List (ใหม่สุดอยู่ index 0) แล้วตัดให้เหลือ 100
         await redis_client.lpush(KEY_FUEL_HISTORY, json_str)
         await redis_client.ltrim(KEY_FUEL_HISTORY, 0, FUEL_HISTORY_MAX - 1)
 
-        # 3. Patch dashboard cache + publish SSE
         await patch_redis_cache({"car": {"fuel_latest": fuel_data}})
 
         print(f"[Fuel Webhook] อัปเดตสำเร็จ: {fuel_data}")
@@ -112,7 +107,23 @@ def fetch_hos_sync():
     hos_data = {
         "walk_in": 0, "appointment": 0, "referIn": 0,
         "ems": 0, "telemed": 0, "kiosk": 0, "go_home": 0,
-        "drug_delivery": 0
+        "drug_delivery": 0,
+        "avg_total": 0.0,
+        "avg_wait_screening": 0.0,
+        "avg_wait_exam": 0.0,
+        "avg_wait_drug": 0.0,
+        "waiting_drug": 0,
+        "waiting_payment": 0,
+        "dep_010": {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        },
+        "dep_062": {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        },
     }
     try:
         with SessionHOS() as db_hos:
@@ -147,6 +158,71 @@ def fetch_hos_sync():
             delivery_res = db_hos.execute(delivery_sql).fetchone()
             if delivery_res:
                 hos_data["drug_delivery"] = int(delivery_res[0] or 0)
+
+            service_sql = text("""
+                SELECT
+                    -- Combined
+                    ROUND(AVG(GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0)), 1),
+                    ROUND(AVG(GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0)), 1),
+                    ROUND(AVG(GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0)), 1),
+                    ROUND(AVG(GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0)), 1),
+                    SUM(CASE WHEN s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END),
+                    
+                    -- 010
+                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '010' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '010' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
+
+                    -- 062
+                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '062' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '062' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
+
+                FROM service_time s
+                JOIN ovst o ON s.vn = o.vn
+                WHERE s.vstdate = CURDATE()
+                  AND o.main_dep IN ('010', '062')
+                  AND s.service3  IS NOT NULL
+                  AND s.service4  IS NOT NULL
+                  AND s.service11 IS NOT NULL
+            """)
+            svc_res = db_hos.execute(service_sql).fetchone()
+            if svc_res:
+                # Combined
+                hos_data["avg_total"]          = float(svc_res[0] or 0)
+                hos_data["avg_wait_screening"] = float(svc_res[1] or 0)
+                hos_data["avg_wait_exam"]      = float(svc_res[2] or 0)
+                hos_data["avg_wait_drug"]      = float(svc_res[3] or 0)
+                hos_data["waiting_drug"]       = int(svc_res[4] or 0)
+                hos_data["waiting_payment"]    = int(svc_res[5] or 0)
+                
+                # 010
+                hos_data["dep_010"] = {
+                    "avg_total":          float(svc_res[6] or 0),
+                    "avg_wait_screening": float(svc_res[7] or 0),
+                    "avg_wait_exam":      float(svc_res[8] or 0),
+                    "avg_wait_drug":      float(svc_res[9] or 0),
+                    "waiting_drug":       int(svc_res[10] or 0),
+                    "waiting_payment":    int(svc_res[11] or 0),
+                }
+
+                # 062
+                hos_data["dep_062"] = {
+                    "avg_total":          float(svc_res[12] or 0),
+                    "avg_wait_screening": float(svc_res[13] or 0),
+                    "avg_wait_exam":      float(svc_res[14] or 0),
+                    "avg_wait_drug":      float(svc_res[15] or 0),
+                    "waiting_drug":       int(svc_res[16] or 0),
+                    "waiting_payment":    int(svc_res[17] or 0),
+                }
+
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
         
@@ -155,7 +231,6 @@ def fetch_hos_sync():
 def fetch_neoq_sync():
     opd_total = appointment = walk_in = 0
     custom_opd_total = waiting_screening = waiting_exam = 0
-    avg_wait_exam_total = 0.0
     rooms = []
     tech = {
         "xray_queue":     {"all": 0, "waiting": 0, "finished": 0},
@@ -164,6 +239,11 @@ def fetch_neoq_sync():
         "finance_queue":  {"all": 0, "waiting": 0, "finished": 0},
     }
     
+    dept_stats = {
+        "010": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0},
+        "062": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
+    }
+
     try:
         with SessionNEOQ() as db_neoq:
             # 2.1 OPD TOTAL
@@ -204,6 +284,39 @@ def fetch_neoq_sync():
                 res = db_neoq.execute(opd_sql, {"rooms": target_codes}).fetchall()
                 db_map = {r[0]: r for r in res}
             except Exception: pass
+            
+            # --- NEW: Department Specific Subqueries ---
+            try:
+                for code in ["010", "062"]:
+                    row = db_map.get(code, [0, 0, 0, 0, 0, 0])
+                    dept_stats[code]["total"] = int(row[3])
+                    dept_stats[code]["waiting_screening"] = int(row[5])
+                    
+                    exam_sql = text("""
+                        SELECT COUNT(DISTINCT q.vn) 
+                        FROM opd_queue q 
+                        WHERE q.date = CURDATE() AND q.room_code = '023' AND q.status_id != '3'
+                        AND q.vn IN (SELECT vn FROM opd_queue WHERE room_code = :code AND date = CURDATE())
+                    """)
+                    dept_stats[code]["waiting_exam"] = db_neoq.execute(exam_sql, {"code": code}).scalar() or 0
+
+                    lab_sql = text("""
+                        SELECT COUNT(DISTINCT l.vn) 
+                        FROM lab_queue l 
+                        WHERE l.date = CURDATE() AND l.status_id != '3'
+                        AND l.vn IN (SELECT vn FROM opd_queue WHERE room_code = :code AND date = CURDATE())
+                    """)
+                    dept_stats[code]["waiting_lab"] = db_neoq.execute(lab_sql, {"code": code}).scalar() or 0
+
+                    xray_sql = text("""
+                        SELECT COUNT(DISTINCT x.vn) 
+                        FROM xray_queue x 
+                        WHERE x.date = CURDATE() AND x.status_id != '3'
+                        AND x.vn IN (SELECT vn FROM opd_queue WHERE room_code = :code AND date = CURDATE())
+                    """)
+                    dept_stats[code]["waiting_xray"] = db_neoq.execute(xray_sql, {"code": code}).scalar() or 0
+            except Exception as e:
+                print(f"[Cache Worker] Dept Stats Subquery Error: {e}")
 
             # 2.3 CALCULATION: WAIT TIME (รายห้อง แบบอัจฉริยะ)
             wait_map = {}
@@ -245,40 +358,6 @@ def fetch_neoq_sync():
                 """).bindparams(bindparam("rooms", expanding=True))
                 wait_res = db_neoq.execute(wait_sql, {"rooms": target_codes}).fetchall()
                 wait_map = {r[0]: float(r[1]) for r in wait_res}
-            except Exception: pass
-
-            # 2.3.1 CALCULATION: SUMMARY WAIT EXAM (ภาพรวมทั้ง รพ.)
-            try:
-                exam_wait_sql = text("""
-                    SELECT 
-                        ROUND(AVG(x.wait_exam_minutes), 1) AS avg_wait_exam_total
-                    FROM (
-                        SELECT 
-                            c.vn,
-                            GREATEST(
-                                TIMESTAMPDIFF(
-                                    MINUTE,
-                                    COALESCE(sub.finish_time, CONCAT(q.date, ' ', q.time)), 
-                                    CONCAT(c.date, ' ', c.time)
-                                ), 
-                                0
-                            ) AS wait_exam_minutes
-                        FROM opd_queue_call c
-                        JOIN opd_queue q ON c.vn = q.vn AND c.date = q.date
-                        LEFT JOIN (
-                            SELECT vn, date, MAX(time) as finish_time 
-                            FROM opd_queue_call 
-                            WHERE room_code IN ('010', '062')
-                            GROUP BY vn, date
-                        ) sub ON c.vn = sub.vn AND c.date = sub.date
-                        WHERE c.date = CURDATE()
-                          AND c.room_code NOT IN ('010', '062', '082')
-                    ) x
-                    WHERE x.wait_exam_minutes < 240
-                """)
-                exam_wait_res = db_neoq.execute(exam_wait_sql).fetchone()
-                if exam_wait_res and exam_wait_res[0] is not None:
-                    avg_wait_exam_total = float(exam_wait_res[0])
             except Exception: pass
 
             # 2.4 TECH SERVICES
@@ -352,9 +431,9 @@ def fetch_neoq_sync():
         "custom_opd_total": custom_opd_total,
         "waiting_screening": waiting_screening,
         "waiting_exam": waiting_exam,
-        "avg_wait_exam_total": avg_wait_exam_total,
         "rooms": rooms,
-        "tech": tech
+        "tech": tech,
+        "dept_stats": dept_stats
     }
 
 # ==========================================================
@@ -365,7 +444,6 @@ async def task_update_hos():
     print("[Task HOSxP] เริ่มทำงาน...")
     while True:
         try:
-            # ดึงข้อมูลผ่าน Thread เพื่อไม่ให้บล็อกระบบ
             hos_data = await asyncio.to_thread(fetch_hos_sync)
             
             total_walkin_kiosk = hos_data["walk_in"] + hos_data["kiosk"]
@@ -385,6 +463,16 @@ async def task_update_hos():
                     "total_walkin":         total_walkin_kiosk,
                     "total_OPD":            total_hos_opd,
                     "total_drug_delivery":  hos_data["drug_delivery"]
+                },
+                "summary": {
+                    "avg_wait_total":       hos_data["avg_total"],
+                    "avg_wait_screening":   hos_data["avg_wait_screening"],
+                    "avg_wait_examination": hos_data["avg_wait_exam"],
+                    "avg_wait_drug":        hos_data["avg_wait_drug"],
+                    "waiting_drug":         hos_data["waiting_drug"],
+                    "waiting_payment":      hos_data["waiting_payment"],
+                    "dep_010":              hos_data["dep_010"],
+                    "dep_062":              hos_data["dep_062"],
                 }
             }
             await patch_redis_cache(patch_data)
@@ -397,26 +485,24 @@ async def task_update_neoq():
     print("[Task NEOQ] เริ่มทำงาน...")
     while True:
         try:
-            # ดึงข้อมูลผ่าน Thread เพื่อไม่ให้บล็อกระบบ
             n_data = await asyncio.to_thread(fetch_neoq_sync)
 
             patch_data = {
                 "system": {
                     "today_total_services": n_data["opd_total"]
                 },
-                "summary": {
-                    "avg_wait_examination": n_data["avg_wait_exam_total"]
-                },
                 "opd_clinics": {
                     "header": {
-                        "opd_total":        n_data["opd_total"],
-                        "appointment":      n_data["appointment"],
-                        "walk_in":          n_data["walk_in"],
-                        "custom_opd_total": n_data["custom_opd_total"],
+                        "opd_total":         n_data["opd_total"],
+                        "appointment":       n_data["appointment"],
+                        "walk_in":           n_data["walk_in"],
+                        "custom_opd_total":  n_data["custom_opd_total"],
                         "waiting_screening": n_data["waiting_screening"],
-                        "waiting_exam":     n_data["waiting_exam"]
+                        "waiting_exam":      n_data["waiting_exam"]
                     },
                     "rooms": n_data["rooms"],
+                    "stats_010": n_data["dept_stats"]["010"],
+                    "stats_062": n_data["dept_stats"]["062"]
                 },
                 "technical_services": {
                     "xray":     n_data["tech"]["xray_queue"],
@@ -429,7 +515,7 @@ async def task_update_neoq():
         except Exception as e:
             print(f"[Task NEOQ] Loop Error: {e}")
             
-        await asyncio.sleep(5) 
+        await asyncio.sleep(5)
 
 # ==========================================================
 # Main Entry Point
@@ -441,10 +527,8 @@ async def update_redis_cache():
     """
     print("[Cache Worker] เริ่มกระจายงาน (HOSxP และ NEOQ รันขนานกัน)...")
     
-    # สั่งให้ 2 Loop ทำงานอยู่เบื้องหลังพร้อมๆ กัน
     asyncio.create_task(task_update_hos())
     asyncio.create_task(task_update_neoq())
     
-    # ป้องกันไม่ให้ฟังก์ชันหลักหลุด Loop 
     while True:
         await asyncio.sleep(3600)
