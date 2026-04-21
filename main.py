@@ -27,6 +27,7 @@ from cache_manager import (
 from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
+from utils.security import verify_ip
 
 
 load_dotenv()
@@ -191,41 +192,20 @@ async def health_check(
     # overall
     all_ok = all(v["status"] == "success" for v in results.values())
     return {"overall": "ok" if all_ok else "degraded", "services": results}
-# ==========================================================
-# Security & Access Control: เช็คเครือข่ายภายในโรงพยาบาล
-# ==========================================================
-INTERNAL_NETWORKS = [
-    "10.0.0.0/24",     
-    "127.0.0.1/32",  
-    "125.24.18.19/32"   
-]
 
-def is_ip_internal(client_ip: str) -> bool:
-    try:
-        client_addr = ipaddress.ip_address(client_ip)
-        for network in INTERNAL_NETWORKS:
-            if client_addr in ipaddress.ip_network(network):
-                return True
-        return False
-    except ValueError:
-        return False
 
 @app.get("/api/check-network", tags=["Security"])
-async def check_network(request: Request):
-    """ตรวจสอบว่า User ที่เรียกเข้ามา อยู่ในวงเน็ตของโรงพยาบาลหรือไม่"""
-    
-    # ดึง IP จาก Apache Header (X-Forwarded-For)
+async def check_network(
+    request: Request,
+    _: bool = Depends(verify_ip)
+):
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        # กรณีผ่าน Proxy หลายชั้น ตัวแรกสุดคือ IP ของ User จริงๆ
         client_ip = forwarded_for.split(",")[0].strip()
     else:
-        # ถ้าไม่มี Header (เช่นรัน Local) ให้ดึงตรงๆ
         client_ip = request.client.host
 
-    is_internal = is_ip_internal(client_ip)
-    
     return {
-        "isInternal": is_internal,
-        "client_ip": client_ip # ส่งกลับไปดูเพื่อเช็คว่าตรวจเจอ IP อะไร
+        "isInternal": True,  
+        "client_ip": client_ip
     }
