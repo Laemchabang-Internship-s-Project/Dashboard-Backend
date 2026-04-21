@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from dotenv import load_dotenv
 from datetime import date
+from routers import dashboard
 
 from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
@@ -27,6 +28,8 @@ from cache_manager import (
 from routers.queue_technical import Xray, Lab, Pharmacy, financial
 from routers.queue_clinics import opd_main
 from routers import fuel
+from fastapi.openapi.utils import get_openapi
+from fastapi.security import APIKeyHeader
 
 
 load_dotenv()
@@ -50,16 +53,50 @@ app = FastAPI(
     title="LCBH Dashboard API",
     version="2.0.0",
     description="ระบบ Dashboard โรงพยาบาลแหลมฉบัง (Real-time via Redis Pub/Sub)",
-    lifespan=lifespan
+    lifespan=lifespan,
+    swagger_ui_parameters={"docExpansion": "none"}
 )
+
+X_FORWARDED_FOR_HEADER = APIKeyHeader(name="X-Forwarded-For", auto_error=False)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[
+        "https://dashboard.lcbh.go.th", 
+        "http://localhost:5173" #dev
+        ],
+    allow_credentials=True,
     allow_methods=["GET"],
-    allow_headers=["x-api-key", "Content-Type"],
+    allow_headers=["x-api-key", "Content-Type","X-Forwarded-For"],
 )
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    # เพิ่มนิยามของ Header ที่เราต้องการหลอก Swagger
+    openapi_schema["components"]["securitySchemes"]["XForwardedFor"] = {
+        "type": "apiKey",
+        "name": "X-Forwarded-For",
+        "in": "header"
+    }
+    # สั่งให้ทุก Endpoint สามารถใช้ช่องนี้ได้ (หรือจะระบุเฉพาะบางหน้าก็ได้)
+    for path in openapi_schema["paths"]:
+        for method in openapi_schema["paths"][path]:
+            if "security" not in openapi_schema["paths"][path][method]:
+                openapi_schema["paths"][path][method]["security"] = []
+            openapi_schema["paths"][path][method]["security"].append({"XForwardedFor": []})
+            
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 @app.get("/api/dashboard/summary-range", tags=["Filter"])
 async def get_summary_range(
@@ -117,89 +154,9 @@ async def get_summary_range(
         raise HTTPException(status_code=500, detail="ไม่สามารถดึงข้อมูลสรุปช่วงเวลาได้")
 
 # ==========================================================
-# SSE Endpoint: Stream ข้อมูล Dashboard แบบ Real-time
-# ==========================================================
-@app.get("/api/dashboard/stream", tags=["Real-time"])
-async def dashboard_stream(
-    request: Request,
-    api_key: str = Depends(get_api_key)  # ✅ เปิด auth สำหรับ SSE
-):
-    async def event_generator():
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(CHANNEL_DASHBOARD)
-
-        try:
-            # ✅ ส่ง snapshot ครั้งแรก
-            initial_data = await redis_client.get("dashboard_full_cache")
-            if initial_data:
-                if isinstance(initial_data, bytes):
-                    initial_data = initial_data.decode("utf-8")
-
-                yield f"data: {initial_data}\n\n"
-
-            while True:
-                # ถ้า client disconnect → stop loop ทันที
-                if await request.is_disconnected():
-                    print("🔌 Client disconnected")
-                    break
-
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=1.0
-                )
-
-                if message:
-                    data = message["data"]
-
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
-
-                    yield f"data: {data}\n\n"
-                else:
-                    # keep-alive กัน proxy ตัด connection
-                    yield ": ping\n\n"
-
-                await asyncio.sleep(0.1)
-
-        except asyncio.CancelledError:
-            print("🔌 SSE cancelled")
-
-        finally:
-            await pubsub.unsubscribe(CHANNEL_DASHBOARD)
-            await pubsub.close()
-            print("🧹 Redis pubsub closed")
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            # ปิด buffering reverse proxy
-            "X-Accel-Buffering": "no",
-            #กัน proxy แปลง content
-            "Content-Type": "text/event-stream",
-        },
-    )
-
-# ==========================================================
-# REST Endpoint: ดึงข้อมูล Dashboard แบบ Snapshot
-# ==========================================================
-@app.get("/api/dashboard/snapshot", tags=["Real-time"])
-async def dashboard_snapshot(
-    api_key: str = Depends(get_api_key)
-):
-    """ดึงข้อมูล Dashboard ทั้งหมดแบบครั้งเดียว (อ่านจาก Redis Cache)"""
-    data = await get_cached_data()
-    if not data:
-        raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม กรุณารอสักครู่")
-    return data
-
-
-# ==========================================================
 # Router Registration
 # ==========================================================
-
+app.include_router(dashboard.router)
 # Fuel Webhook (รับ trigger จาก Google Apps Script)
 app.include_router(fuel.router)
 
