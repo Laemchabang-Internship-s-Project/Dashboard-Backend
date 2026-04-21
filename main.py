@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ipaddress
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException , Query, Request
@@ -54,7 +55,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://dashboard.lcbh.go.th"],
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET"],
     allow_headers=["x-api-key", "Content-Type"],
@@ -246,3 +247,42 @@ async def get_total_services():
     if not data:
         raise HTTPException(status_code=503, detail="ข้อมูลยังไม่พร้อม")
     return {"today_total": data.get("today_total_services", 0)}
+
+# ==========================================================
+# Security & Access Control: เช็คเครือข่ายภายในโรงพยาบาล
+# ==========================================================
+INTERNAL_NETWORKS = [
+    "10.0.0.0/24",     
+    "127.0.0.1/32",  
+    "125.24.18.19/32"   
+]
+
+def is_ip_internal(client_ip: str) -> bool:
+    try:
+        client_addr = ipaddress.ip_address(client_ip)
+        for network in INTERNAL_NETWORKS:
+            if client_addr in ipaddress.ip_network(network):
+                return True
+        return False
+    except ValueError:
+        return False
+
+@app.get("/api/check-network", tags=["Security"])
+async def check_network(request: Request):
+    """ตรวจสอบว่า User ที่เรียกเข้ามา อยู่ในวงเน็ตของโรงพยาบาลหรือไม่"""
+    
+    # ดึง IP จาก Apache Header (X-Forwarded-For)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # กรณีผ่าน Proxy หลายชั้น ตัวแรกสุดคือ IP ของ User จริงๆ
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        # ถ้าไม่มี Header (เช่นรัน Local) ให้ดึงตรงๆ
+        client_ip = request.client.host
+
+    is_internal = is_ip_internal(client_ip)
+    
+    return {
+        "isInternal": is_internal,
+        "client_ip": client_ip # ส่งกลับไปดูเพื่อเช็คว่าตรวจเจอ IP อะไร
+    }
