@@ -4,12 +4,13 @@ POST /api/fuel/webhook  — รับข้อมูลตรวจเช็ค�
 GET  /api/fuel/latest   — ดูค่าล่าสุดจาก Redis
 """
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 from typing import Optional
 import os
 
 from cache_manager import update_fuel_cache, redis_client, KEY_FUEL_CACHE, KEY_FUEL_HISTORY
+from rate_limiter import limiter
 import json
 
 router = APIRouter(prefix="/api/fuel", tags=["Fuel"])
@@ -40,7 +41,9 @@ class FuelPayload(BaseModel):
 # POST /api/fuel/webhook
 # ----------------------------------------------------------
 @router.post("/webhook")
+@limiter.limit("10/minute")
 async def fuel_webhook(
+    request: Request,
     payload: FuelPayload,
     x_webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
 ):
@@ -64,7 +67,8 @@ async def fuel_webhook(
 # GET /api/fuel/latest
 # ----------------------------------------------------------
 @router.get("/latest")
-async def get_latest_fuel():
+@limiter.limit("30/minute")
+async def get_latest_fuel(request: Request):
     """ดึงข้อมูลตรวจเช็ครถล่าสุดจาก Redis"""
     raw = await redis_client.get(KEY_FUEL_CACHE)
     if not raw:
@@ -76,7 +80,8 @@ async def get_latest_fuel():
 # GET /api/fuel/history?limit=100
 # ----------------------------------------------------------
 @router.get("/history")
-async def get_fuel_history(limit: int = 100):
+@limiter.limit("30/minute")
+async def get_fuel_history(request: Request, limit: int = 100):
     """
     ดึงประวัติการตรวจเช็ครถล่าสุดจาก Redis List
     - limit: จำนวนรายการที่ต้องการ (สูงสุด 100, default 100)
@@ -99,7 +104,9 @@ class BackfillPayload(BaseModel):
 
 
 @router.post("/backfill")
+@limiter.limit("5/minute")
 async def fuel_backfill(
+    request: Request,
     payload: BackfillPayload,
     x_webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
 ):

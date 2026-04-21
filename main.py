@@ -3,9 +3,10 @@ import json
 import ipaddress
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException , Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Depends, HTTPException , Query, Request, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from dotenv import load_dotenv
@@ -16,6 +17,8 @@ from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
 # หมายเหตุ: ตรวจสอบว่ามีไฟล์ security.py ในโฟลเดอร์ utils หากใช้งาน API Key
 from utils.security import get_api_key
+from slowapi.middleware import SlowAPIMiddleware
+from utils.network import get_client_ip
 
 # --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
 from cache_manager import (
@@ -28,6 +31,11 @@ from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
 from utils.security import verify_ip
+
+# --- Rate Limiter ---
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from rate_limiter import limiter
 
 
 load_dotenv()
@@ -54,9 +62,25 @@ app = FastAPI(
     lifespan=lifespan,
     swagger_ui_parameters={"docExpansion": "none"}
 )
+app.add_middleware(SlowAPIMiddleware)
+
+
+# ==========================================================
+# Rate Limiter — ผูกกับ app
+# ==========================================================
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
 
 X_FORWARDED_FOR_HEADER = APIKeyHeader(name="X-Forwarded-For", auto_error=False)
 
+
+# ==========================================================
+# Middleware Stack (เรียงจากล่างขึ้นบน = ทำงานจากบนลงล่าง)
+# ==========================================================
+
+# 1. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -68,6 +92,65 @@ app.add_middleware(
     allow_headers=["x-api-key", "Content-Type","X-Forwarded-For"],
 )
 
+# 2. Trusted Host Middleware — จำกัด hostname ที่รับ
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=[
+        "dashboard.lcbh.go.th",
+        "localhost",
+        "127.0.0.1",
+        "*.lcbh.go.th",
+    ],
+)
+
+
+# ==========================================================
+# 3. Security Headers Middleware — ป้องกัน XSS, Clickjacking, MIME Sniffing
+# ==========================================================
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    
+    # ป้องกัน MIME type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # ป้องกัน Clickjacking (ไม่ให้แสดงใน iframe)
+    response.headers["X-Frame-Options"] = "DENY"
+    # ป้องกัน XSS (สำหรับ browser เก่า)
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # บังคับใช้ HTTPS (1 ปี)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # ป้องกัน information leakage ผ่าน Referer
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # ป้องกันการเรียกใช้ API ที่ไม่ได้รับอนุญาต
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # ไม่ให้ cache API response (ป้องกันข้อมูลเก่าค้าง)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    
+    return response
+
+
+# ==========================================================
+# 4. Request Size Limit Middleware — จำกัดขนาด body ≤ 1MB
+# ==========================================================
+MAX_REQUEST_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
+
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    # ตรวจสอบ Content-Length header
+    content_length = request.headers.get("content-length")
+    if content_length:
+        if int(content_length) > MAX_REQUEST_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large (สูงสุด 1MB)"}
+            )
+    return await call_next(request)
+
+
+# ==========================================================
+# OpenAPI Customization
+# ==========================================================
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -96,8 +179,13 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
+# ==========================================================
+# Endpoints ใน main.py (พร้อม Rate Limit)
+# ==========================================================
 @app.get("/api/dashboard/summary-range", tags=["Filter"])
+@limiter.limit("20/minute")
 async def get_summary_range(
+    request: Request,
     api_key: str = Depends(get_api_key),
     start_date: date = Query(..., description="วันที่เริ่มต้น (YYYY-MM-DD)"),
     end_date: date = Query(..., description="วันที่สิ้นสุด (YYYY-MM-DD)"),
@@ -162,7 +250,9 @@ app.include_router(fuel.router)
 # System Endpoints
 # ==========================================================
 @app.get("/api/system/health", tags=["System"])
+@limiter.limit("10/minute")
 async def health_check(
+    request: Request,
     neoq_db: Session = Depends(get_neoq_db),
     hos_db: Session = Depends(get_hos_db),
 ):
@@ -193,19 +283,12 @@ async def health_check(
     all_ok = all(v["status"] == "success" for v in results.values())
     return {"overall": "ok" if all_ok else "degraded", "services": results}
 
-
 @app.get("/api/check-network", tags=["Security"])
-async def check_network(
-    request: Request,
-    _: bool = Depends(verify_ip)
-):
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-    else:
-        client_ip = request.client.host
+async def check_network(request: Request):
+    await verify_ip(request)
 
+    client_ip = get_client_ip(request)
     return {
-        "isInternal": True,  
+        "isInternal": True,
         "client_ip": client_ip
     }

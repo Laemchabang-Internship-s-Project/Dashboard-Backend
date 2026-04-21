@@ -1,14 +1,17 @@
 import json
 from datetime import date
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Request
 from sqlalchemy import text
 from database_hos import SessionLocal as SessionHOS
 from cache_manager import redis_client # นำเข้า redis_client จากไฟล์ที่คุณมีอยู่แล้ว
+from rate_limiter import limiter
 
 router = APIRouter()
 
 @router.get("/api/dashboard/summary-range")
+@limiter.limit("20/minute")
 async def get_summary_range(
+    request: Request,
     start_date: date = Query(..., description="วันที่เริ่มต้น (YYYY-MM-DD)"),
     end_date: date = Query(..., description="วันที่สิ้นสุด (YYYY-MM-DD)")
 ):
