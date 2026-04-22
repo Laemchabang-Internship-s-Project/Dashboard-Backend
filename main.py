@@ -285,10 +285,13 @@ async def health_check(
 
 @app.get("/api/check-network", tags=["Security"])
 async def check_network(request: Request):
-    await verify_ip(request)
+    #await verify_ip(request)
 
     client_ip = get_client_ip(request)
     return {
-        "isInternal": True,
-        "client_ip": client_ip
+        # "isInternal": True,
+        # "client_ip": client_ip
+        "status": "testing",
+        "ip_that_server_sees": client_ip, # ดูว่า Server เห็นคุณเป็นใคร
+        "x_forwarded_for": request.headers.get("X-Forwarded-For")
     }
