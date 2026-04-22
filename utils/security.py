@@ -25,7 +25,7 @@ INTERNAL_NETWORKS = [
     "127.0.0.1/32",  
     "192.168.2.0/24",
     "172.16.0.0/12",
-    "125.24.18.19/32"   
+    "122.154.113.68/32"   
 ]
 
 def is_ip_internal(client_ip: str) -> bool:
@@ -43,6 +43,6 @@ async def verify_ip(request: Request):
     client_ip = get_client_ip(request)
 
     if not is_ip_internal(client_ip):
-        raise HTTPException(status_code=403, detail="Access Denied")
+        raise HTTPException(status_code=403, detail=f"Access Denied: {client_ip}")
 
     return True
