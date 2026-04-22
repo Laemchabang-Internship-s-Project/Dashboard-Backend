@@ -23,7 +23,7 @@ async def get_api_key(api_key_header: str = Security(api_key_header)):
 INTERNAL_NETWORKS = [
     "10.0.0.0/24",     
     "127.0.0.1/32",  
-    "192.168.10.0/24",
+    "192.168.2.0/24",
     "172.16.0.0/12",
     "125.24.18.19/32"   
 ]

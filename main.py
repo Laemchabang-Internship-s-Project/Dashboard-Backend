@@ -84,8 +84,8 @@ X_FORWARDED_FOR_HEADER = APIKeyHeader(name="X-Forwarded-For", auto_error=False)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://dashboard.lcbh.go.th", 
-        "http://localhost:5173" #dev
+        "https://dashboard.lcbh.go.th",
+        "http://localhost:5173"
         ],
     allow_credentials=True,
     allow_methods=["GET"],

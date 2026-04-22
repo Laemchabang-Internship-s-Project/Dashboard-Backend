@@ -3,22 +3,31 @@
 # ============================================
 FROM python:3.11-slim
 
-# ตั้งค่า working directory
+# 1. ตั้งค่า working directory
 WORKDIR /app
 
-# ติดตั้ง dependencies ก่อน (ใช้ Docker layer cache)
+# 2. สร้าง System User เพื่อความปลอดภัย (ไม่ใช้ root รันแอป)
+RUN addgroup --system appgroup && adduser --system --group appuser
+
+# 3. ติดตั้ง dependencies ก่อน (ใช้ Docker layer cache)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# คัดลอก source code ทั้งหมด
+# 4. คัดลอก source code ทั้งหมด
 COPY . .
+
+# 5. เปลี่ยนเจ้าของไฟล์ทั้งหมดใน /app ให้เป็น appuser
+RUN chown -R appuser:appgroup /app
+
+# 6. สลับไปใช้ User ที่สร้างขึ้น
+USER appuser
 
 # เปิด port 8000
 EXPOSE 8000
 
 # รัน FastAPI ด้วย Uvicorn
-# - workers 1 เพราะใช้ asyncio background task (ถ้าใช้มากกว่า 1 จะมี worker ซ้ำกัน)
-# - timeout-keep-alive สูงเพื่อรองรับ SSE long-lived connections
+# - workers 1 เพราะใช้ asyncio background task
+# - timeout-keep-alive 120 รองรับ SSE long-lived connections
 CMD ["uvicorn", "main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
