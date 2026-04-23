@@ -30,7 +30,6 @@ from cache_manager import (
 from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
-from utils.security import verify_ip
 
 # --- Rate Limiter ---
 from slowapi import _rate_limit_exceeded_handler
@@ -85,7 +84,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://dashboard.lcbh.go.th",
-        "http://localhost:5174"
+        "http://localhost:5173"
         ],
     allow_credentials=True,
     allow_methods=["GET"],
@@ -249,7 +248,7 @@ app.include_router(fuel.router)
 # ==========================================================
 # System Endpoints
 # ==========================================================
-@app.get("/api/system/health", tags=["System"], dependencies=[Depends(get_api_key), Depends(verify_ip)])
+@app.get("/api/system/health", tags=["System"], dependencies=[Depends(get_api_key)])
 @limiter.limit("10/minute")
 async def health_check(
     request: Request,
@@ -283,14 +282,3 @@ async def health_check(
     all_ok = all(v["status"] == "success" for v in results.values())
     return {"overall": "ok" if all_ok else "degraded", "services": results}
 
-@app.get("/api/check-network", tags=["Security"])
-async def check_network(request: Request):
-    all_headers = dict(request.headers)
-
-    await verify_ip(request)
-    client_ip = get_client_ip(request)
-    
-    return {
-        "client_ip": client_ip, 
-        "all_headers": all_headers 
-    }

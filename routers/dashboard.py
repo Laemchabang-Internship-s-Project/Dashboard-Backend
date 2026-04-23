@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from cache_manager import redis_client, CHANNEL_DASHBOARD, KEY_DASHBOARD_CACHE
-from utils.security import get_api_key, verify_ip
+from utils.security import get_api_key
 from rate_limiter import limiter
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
@@ -62,7 +62,7 @@ async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
 # ==========================================================
 # 2. Internal Route (เช็ค API Key + เช็ค IP)
 # ==========================================================
-@router.get("/internal/snapshot", dependencies=[Depends(get_api_key), Depends(verify_ip)])
+@router.get("/internal/snapshot", dependencies=[Depends(get_api_key)])
 @limiter.limit("60/minute")
 async def get_internal_snapshot(request: Request):
     raw = await redis_client.get(KEY_DASHBOARD_CACHE)
@@ -72,7 +72,7 @@ async def get_internal_snapshot(request: Request):
 
 @router.get("/internal/stream")
 @limiter.limit("60/minute")
-async def internal_stream(request: Request, api_key: str = Depends(get_api_key), _ip=Depends(verify_ip)):
+async def internal_stream(request: Request, api_key: str = Depends(get_api_key)):
     async def event_generator():
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(CHANNEL_DASHBOARD)
