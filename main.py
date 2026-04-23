@@ -36,6 +36,9 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiter import limiter
 
+# --- Filter Router ---
+from routers import filter as filter_router
+
 
 load_dotenv()
 
@@ -178,65 +181,7 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# ==========================================================
-# Endpoints ใน main.py (พร้อม Rate Limit)
-# ==========================================================
-@app.get("/api/dashboard/summary-range", tags=["Filter"])
-@limiter.limit("20/minute")
-async def get_summary_range(
-    request: Request,
-    api_key: str = Depends(get_api_key),
-    start_date: date = Query(..., description="วันที่เริ่มต้น (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="วันที่สิ้นสุด (YYYY-MM-DD)"),
-    db_hos: Session = Depends(get_hos_db) # ใช้ Dependency สำหรับต่อ HOSxP
-):
-    """ดึงข้อมูลสรุปยอดบริการ 4 อย่างหลัก ตามช่วงวันที่ที่กำหนด"""
-    
-    # 1. สร้าง Cache Key เพื่อเช็คใน Redis ก่อน (ป้องกันการรัน SQL ซ้ำๆ เมื่อเปิดพร้อมกัน)
-    cache_key = f"summary:range:{start_date}:{end_date}"
-    
-    try:
-        # 2. ลองดึงจาก Redis
-        cached_raw = await redis_client.get(cache_key)
-        if cached_raw:
-            return json.loads(cached_raw)
-
-        # 3. ถ้าไม่มีใน Cache ให้ Query จาก HOSxP
-        # ใช้ Logic การรวมกลุ่ม (Walk-in + Kiosk) ตามมาตรฐานที่คุณใช้ใน cache_manager.py
-        sql = text("""
-            SELECT 
-                COUNT(vn) as total_opd,
-                SUM(CASE WHEN ovstist IN ('01', '06') THEN 1 ELSE 0 END) as walk_in,
-                SUM(CASE WHEN ovstist = '05' THEN 1 ELSE 0 END) as telemed,
-                (SELECT COUNT(DISTINCT o.vn) 
-                 FROM opitemrece o 
-                 WHERE o.vstdate BETWEEN :start AND :end 
-                 AND o.icode IN ('3907489', '3907018', '3907508')
-                ) as drug_delivery
-            FROM ovst 
-            WHERE vstdate BETWEEN :start AND :end
-        """)
-        
-        res = db_hos.execute(sql, {"start": start_date, "end": end_date}).fetchone()
-        
-        result_data = {
-            "period": {"start": str(start_date), "end": str(end_date)},
-            "data": {
-                "opd_total": int(res[0] or 0),
-                "walk_in": int(res[1] or 0),
-                "telemed": int(res[2] or 0),
-                "drug_delivery": int(res[3] or 0)
-            }
-        }
-
-        # 4. บันทึกลง Redis (ตั้งเวลา Expire 5 นาที เพื่อให้คนอื่นที่เปิดพร้อมกันได้ใช้ด้วย)
-        await redis_client.set(cache_key, json.dumps(result_data), ex=300)
-        
-        return result_data
-
-    except Exception as e:
-        print(f"[Summary Range] Error: {e}")
-        raise HTTPException(status_code=500, detail="ไม่สามารถดึงข้อมูลสรุปช่วงเวลาได้")
+app.include_router(filter_router.router ,tags = ["Filter Data"])
 
 # ==========================================================
 # Router Registration
