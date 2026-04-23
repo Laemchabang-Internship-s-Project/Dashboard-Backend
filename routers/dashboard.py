@@ -26,7 +26,6 @@ def get_public_view(full_data: dict):
 # 1. Public Route (เช็ค API Key)
 # ==========================================================
 @router.get("/public/snapshot", dependencies=[Depends(get_api_key)])
-@limiter.limit("30/minute")
 async def get_public_snapshot(request: Request):
     raw = await redis_client.get(KEY_DASHBOARD_CACHE)
     if not raw:
@@ -34,7 +33,7 @@ async def get_public_snapshot(request: Request):
     return get_public_view(json.loads(raw))
 
 @router.get("/public/stream")
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
     async def event_generator():
         pubsub = redis_client.pubsub()
@@ -63,7 +62,6 @@ async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
 # 2. Internal Route (เช็ค API Key + เช็ค IP)
 # ==========================================================
 @router.get("/internal/snapshot", dependencies=[Depends(get_api_key)])
-@limiter.limit("60/minute")
 async def get_internal_snapshot(request: Request):
     raw = await redis_client.get(KEY_DASHBOARD_CACHE)
     if not raw:
