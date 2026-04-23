@@ -28,8 +28,11 @@ EXPOSE 8000
 # รัน FastAPI ด้วย Uvicorn
 # - workers 1 เพราะใช้ asyncio background task
 # - timeout-keep-alive 120 รองรับ SSE long-lived connections
+# - proxy-headers และ forwarded-allow-ips เพื่อรับ IP จริงจาก Apache
 CMD ["uvicorn", "main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
      "--workers", "1", \
-     "--timeout-keep-alive", "120"]
+     "--timeout-keep-alive", "120", \
+     "--proxy-headers", \
+     "--forwarded-allow-ips", "*"]
