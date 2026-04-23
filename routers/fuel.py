@@ -12,7 +12,7 @@ import os
 from cache_manager import update_fuel_cache, redis_client, KEY_FUEL_CACHE, KEY_FUEL_HISTORY
 from rate_limiter import limiter
 import json
-from utils.security import get_api_key,verify_ip
+from utils.security import get_api_key
 
 router = APIRouter(prefix="/api/fuel", tags=["Fuel"])
 

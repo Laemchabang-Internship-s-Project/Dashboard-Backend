@@ -30,7 +30,6 @@ from cache_manager import (
 from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
-from utils.security import verify_ip
 
 # --- Rate Limiter ---
 from slowapi import _rate_limit_exceeded_handler
@@ -249,7 +248,7 @@ app.include_router(fuel.router)
 # ==========================================================
 # System Endpoints
 # ==========================================================
-@app.get("/api/system/health", tags=["System"], dependencies=[Depends(get_api_key), Depends(verify_ip)])
+@app.get("/api/system/health", tags=["System"], dependencies=[Depends(get_api_key)])
 @limiter.limit("10/minute")
 async def health_check(
     request: Request,
@@ -282,16 +281,4 @@ async def health_check(
     # overall
     all_ok = all(v["status"] == "success" for v in results.values())
     return {"overall": "ok" if all_ok else "degraded", "services": results}
-
-@app.get("/api/check-network", tags=["Security"])
-async def check_network(request: Request):
-    #await verify_ip(request)
-
-    client_ip = get_client_ip(request)
-    return {
-        # "isInternal": True,
-        # "client_ip": client_ip
-        "status": "testing",
-        "ip_that_server_sees": client_ip, # ดูว่า Server เห็นคุณเป็นใคร
-        "x_forwarded_for": request.headers.get("X-Forwarded-For")
-    }
+
