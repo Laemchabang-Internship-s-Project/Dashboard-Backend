@@ -85,7 +85,7 @@ async def get_current_user(
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=TokenResponse)
-@limiter.limit("5/minute")  # ป้องกัน Brute Force: ลองได้แค่ 5 ครั้ง/นาที
+@limiter.limit("100/minute")  # เพิ่มโควต้าเป็น 100 ครั้ง/นาที เพื่อรองรับ IP ที่ซ้ำกัน
 async def login(request: Request, body: LoginRequest):
     """
     รับรหัสผ่านจาก Frontend → ตรวจกับ hash ที่เก็บใน .env
