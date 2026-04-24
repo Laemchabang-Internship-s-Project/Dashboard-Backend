@@ -38,7 +38,8 @@ class TokenResponse(BaseModel):
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    plain_bytes = plain.encode()[:72]
+    return bcrypt.checkpw(plain_bytes, hashed.encode())  # ใช้ plain_bytes
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -85,7 +86,11 @@ async def get_current_user(
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=TokenResponse)
+<<<<<<< HEAD
 @limiter.limit("100/minute")  # เพิ่มโควต้าเป็น 100 ครั้ง/นาที เพื่อรองรับ IP ที่ซ้ำกัน
+=======
+@limiter.limit("100/minute")
+>>>>>>> c14a607 (fix rate limit)
 async def login(request: Request, body: LoginRequest):
     """
     รับรหัสผ่านจาก Frontend → ตรวจกับ hash ที่เก็บใน .env

@@ -10,7 +10,7 @@ REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1"
 
 limiter = Limiter(
     key_func=get_client_ip,
-    default_limits=["60/minute"],
+    default_limits=["100/minute"],
     storage_uri=REDIS_URL,
     strategy="fixed-window",
 )
