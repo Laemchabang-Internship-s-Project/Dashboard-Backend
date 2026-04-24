@@ -6,11 +6,12 @@ auth.py — ระบบ Login / Token สำหรับ Dashboard
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 import bcrypt
 from pydantic import BaseModel
+from rate_limiter import limiter
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
@@ -84,11 +85,19 @@ async def get_current_user(
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest):
+@limiter.limit("5/minute")  # ป้องกัน Brute Force: ลองได้แค่ 5 ครั้ง/นาที
+async def login(request: Request, body: LoginRequest):
     """
     รับรหัสผ่านจาก Frontend → ตรวจกับ hash ที่เก็บใน .env
     ถ้าถูกต้องคืน JWT token, ถ้าผิดคืน 401
     """
+    # ป้องกัน password ยาวเกินไป (DoS via bcrypt)
+    if len(body.password) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="รหัสผ่านยาวเกินไป",
+        )
+
     # โหลด hashed password จาก environment variable
     hashed_password = os.getenv("DASHBOARD_PASSWORD_HASH")
 
