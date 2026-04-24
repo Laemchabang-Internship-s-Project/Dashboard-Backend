@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from cache_manager import redis_client, CHANNEL_DASHBOARD, KEY_DASHBOARD_CACHE
 from utils.security import get_api_key
+from routers.auth import get_current_user
 from rate_limiter import limiter
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
@@ -59,10 +60,13 @@ async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ==========================================================
-# 2. Internal Route (เช็ค API Key + เช็ค IP)
+# 2. Internal Route (เช็ค API Key + JWT Token)
 # ==========================================================
 @router.get("/internal/snapshot", dependencies=[Depends(get_api_key)])
-async def get_internal_snapshot(request: Request):
+async def get_internal_snapshot(
+    request: Request,
+    _user: dict = Depends(get_current_user),
+):
     raw = await redis_client.get(KEY_DASHBOARD_CACHE)
     if not raw:
         raise HTTPException(status_code=503, detail="Loading...")
@@ -70,7 +74,11 @@ async def get_internal_snapshot(request: Request):
 
 @router.get("/internal/stream")
 @limiter.limit("60/minute")
-async def internal_stream(request: Request, api_key: str = Depends(get_api_key)):
+async def internal_stream(
+    request: Request,
+    api_key: str = Depends(get_api_key),
+    _user: dict = Depends(get_current_user),
+):
     async def event_generator():
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(CHANNEL_DASHBOARD)

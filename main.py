@@ -12,6 +12,7 @@ from sqlalchemy import text
 from dotenv import load_dotenv
 from datetime import date
 from routers import dashboard
+from routers import auth as auth_router
 
 from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
@@ -90,8 +91,8 @@ app.add_middleware(
         "http://localhost:5173"
         ],
     allow_credentials=True,
-    allow_methods=["GET"],
-    allow_headers=["x-api-key", "Content-Type","X-Forwarded-For"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["x-api-key", "Content-Type", "X-Forwarded-For", "Authorization"],
 )
 
 # 2. Trusted Host Middleware — จำกัด hostname ที่รับ
@@ -189,6 +190,8 @@ app.include_router(filter_router.router ,tags = ["Filter Data"])
 app.include_router(dashboard.router)
 # Fuel Webhook (รับ trigger จาก Google Apps Script)
 app.include_router(fuel.router)
+# Auth Router
+app.include_router(auth_router.router)
 
 # ==========================================================
 # System Endpoints
