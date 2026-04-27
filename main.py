@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from datetime import date
 from routers import dashboard
 from routers import auth as auth_router
+from routers import graph as graph_router
 
 from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
@@ -192,6 +193,8 @@ app.include_router(dashboard.router)
 app.include_router(fuel.router)
 # Auth Router
 app.include_router(auth_router.router)
+# Graph Router
+app.include_router(graph_router.router)
 
 # ==========================================================
 # System Endpoints

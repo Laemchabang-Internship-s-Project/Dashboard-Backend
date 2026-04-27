@@ -22,6 +22,7 @@ KEY_DASHBOARD_CACHE = "dashboard_full_cache"
 KEY_FUEL_CACHE   = "fuel_latest"
 KEY_FUEL_HISTORY = "fuel_history"   # Redis List เก็บ 100 รายการล่าสุด
 FUEL_HISTORY_MAX = 100
+KEY_GRAPH_CACHE  = "graph_doctor_operation"
 
 # ==========================================================
 # Helper: Redis
@@ -228,6 +229,29 @@ def fetch_hos_sync():
         print(f"[Cache Worker] HOSxP Error: {e}")
         
     return hos_data
+
+def fetch_graph_sync():
+    """ดึงข้อมูลกราฟการผ่าตัดของแพทย์"""
+    data = []
+    try:
+        with SessionHOS() as db_hos:
+            sql = text("""
+                SELECT 
+                    DATE(begin_date_time) AS op_date,
+                    COUNT(*) AS total_operations
+                FROM doctor_operation
+                GROUP BY DATE(begin_date_time)
+                ORDER BY op_date DESC
+            """)
+            res = db_hos.execute(sql).fetchall()
+            for r in res:
+                data.append({
+                    "op_date": str(r[0]),
+                    "total_operations": int(r[1])
+                })
+    except Exception as e:
+        print(f"[Cache Worker] Graph HOSxP Error: {e}")
+    return data
 
 def fetch_neoq_sync():
     opd_total = appointment = walk_in = 0
@@ -482,6 +506,25 @@ async def task_update_hos():
             
         await asyncio.sleep(5)
 
+async def task_update_graph():
+    """จัดการอัปเดตข้อมูลกราฟ (รันสัปดาห์ละครั้ง)"""
+    print("[Task Graph] เริ่มทำงาน...")
+    while True:
+        try:
+            graph_data = await asyncio.to_thread(fetch_graph_sync)
+            if graph_data:
+                await redis_client.set(KEY_GRAPH_CACHE, json.dumps(graph_data, ensure_ascii=False))
+        except Exception as e:
+            print(f"[Task Graph] Loop Error: {e}")
+            
+        await asyncio.sleep(604800) # 7 วัน
+
+async def get_graph_data():
+    raw = await redis_client.get(KEY_GRAPH_CACHE)
+    if not raw:
+        return []
+    return json.loads(raw)
+
 async def task_update_neoq():
     print("[Task NEOQ] เริ่มทำงาน...")
     while True:
@@ -530,6 +573,7 @@ async def update_redis_cache():
     
     asyncio.create_task(task_update_hos())
     asyncio.create_task(task_update_neoq())
+    asyncio.create_task(task_update_graph())
     
     while True:
         await asyncio.sleep(3600)
