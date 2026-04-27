@@ -240,8 +240,13 @@ def fetch_graph_sync():
                     DATE(begin_date_time) AS op_date,
                     COUNT(*) AS total_operations
                 FROM doctor_operation
+                WHERE 
+                    begin_date_time IS NOT NULL
+                    AND begin_date_time >= '2010-01-01'  -- ตัด 1899, 1917
+                    AND begin_date_time <= CURDATE()     -- ตัดอนาคต เช่น 2056
+                    AND begin_date_time != '0001-01-01'  
                 GROUP BY DATE(begin_date_time)
-                ORDER BY op_date DESC
+                ORDER BY op_date DESC;
             """)
             res = db_hos.execute(sql).fetchall()
             for r in res:
