@@ -29,6 +29,8 @@ from cache_manager import (
     get_cached_data,
     CHANNEL_DASHBOARD,
 )
+from tasks.bed_worker import task_update_beds
+from routers import bed as bed_router
 from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
@@ -52,10 +54,12 @@ load_dotenv()
 async def lifespan(app: FastAPI):
     # --- Startup ---
     task = asyncio.create_task(update_redis_cache())
+    bed_task = asyncio.create_task(task_update_beds())
     print("[Main] Cache Worker Task เริ่มทำงานแล้ว")
     yield
     # --- Shutdown ---
     task.cancel()
+    bed_task.cancel()
     print("[Main] Cache Worker Task หยุดทำงานแล้ว")
 
 
@@ -195,6 +199,7 @@ app.include_router(fuel.router)
 app.include_router(auth_router.router)
 # Graph Router
 app.include_router(graph_router.router)
+app.include_router(bed_router.router)
 
 # ==========================================================
 # System Endpoints
