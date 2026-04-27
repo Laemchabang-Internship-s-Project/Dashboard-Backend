@@ -3,8 +3,8 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Query, HTTPException, Request, Depends
 from sqlalchemy import text
 from database_hos import SessionLocal as SessionHOS
-from cache_manager import redis_client
 from rate_limiter import limiter
+from core.redis_client import redis_client
 from utils.security import get_api_key
 
 router = APIRouter()

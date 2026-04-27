@@ -22,13 +22,10 @@ from utils.security import get_api_key
 from slowapi.middleware import SlowAPIMiddleware
 from utils.network import get_client_ip
 
-# --- นำเข้าจาก cache_manager (ศูนย์กลางข้อมูล) ---
-from cache_manager import (
-    update_redis_cache,
-    redis_client,
-    get_cached_data,
-    CHANNEL_DASHBOARD,
-)
+# --- นำเข้าจาก Core, Cache และ Worker (แทนที่ cache_manager เดิม) ---
+from workers.dashboard_worker import update_redis_cache
+from core.redis_client import redis_client, CHANNEL_DASHBOARD
+from cache.dashboard_cache import get_cached_data
 from routers import fuel
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader

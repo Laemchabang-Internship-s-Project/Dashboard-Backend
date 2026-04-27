@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from cache_manager import get_graph_data
+from cache.dashboard_cache import get_graph_data
 
 router = APIRouter(prefix="/api/graph", tags=["Graph Data"])
 

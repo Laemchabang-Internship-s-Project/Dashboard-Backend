@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 
-from cache_manager import update_fuel_cache, redis_client, KEY_FUEL_CACHE, KEY_FUEL_HISTORY
+from core.redis_client import redis_client, KEY_FUEL_CACHE, KEY_FUEL_HISTORY
+from cache.dashboard_cache import update_fuel_cache
 from rate_limiter import limiter
 import json
 from utils.security import get_api_key
@@ -116,7 +117,7 @@ async def fuel_backfill(
     ใช้รันครั้งเดียวเพื่อโหลดประวัติเก่าจาก Google Sheet
     records ควรเรียงจากเก่า → ใหม่ (เพื่อให้ index 0 = ล่าสุด)
     """
-    from cache_manager import FUEL_HISTORY_MAX
+    from core.redis_client import FUEL_HISTORY_MAX
 
     if FUEL_WEBHOOK_SECRET and x_webhook_secret != FUEL_WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -140,7 +141,7 @@ async def fuel_backfill(
     # ไม่เรียก update_fuel_cache เพื่อป้องกันการถูกดัน(lpush) ซ้ำอีก 1 รอบ
     latest_raw = await redis_client.lindex(KEY_FUEL_HISTORY, 0)
     if latest_raw:
-        from cache_manager import KEY_FUEL_CACHE
+        from core.redis_client import KEY_FUEL_CACHE
         await redis_client.set(KEY_FUEL_CACHE, latest_raw)
 
     total = await redis_client.llen(KEY_FUEL_HISTORY)

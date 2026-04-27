@@ -2,7 +2,7 @@ import asyncio
 import json
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from cache_manager import redis_client, CHANNEL_DASHBOARD, KEY_DASHBOARD_CACHE
+from core.redis_client import redis_client, CHANNEL_DASHBOARD, KEY_DASHBOARD_CACHE
 from utils.security import get_api_key
 from routers.auth import get_current_user
 from rate_limiter import limiter
