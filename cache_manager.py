@@ -23,6 +23,7 @@ KEY_FUEL_CACHE   = "fuel_latest"
 KEY_FUEL_HISTORY = "fuel_history"   # Redis List เก็บ 100 รายการล่าสุด
 FUEL_HISTORY_MAX = 100
 KEY_GRAPH_CACHE  = "graph_doctor_operation"
+KEY_DENTAL_CACHE = "graph_dental_summary"
 
 # ==========================================================
 # Helper: Redis
@@ -530,6 +531,58 @@ async def get_graph_data():
         return []
     return json.loads(raw)
 
+def fetch_dental_sync():
+    """ดึงข้อมูลกราฟแผนกทันตกรรมจาก dtmain"""
+    data = []
+    try:
+        with SessionHOS() as db_hos:
+            sql = text("""
+                SELECT 
+                    vstdate AS date,
+                    COUNT(DISTINCT hn)     AS patient_count,
+                    COUNT(dtmain_id)       AS case_count,
+                    SUM(fee)               AS total_revenue,
+                    COUNT(DISTINCT doctor) AS doctor_count
+                FROM dtmain
+                WHERE vstdate IS NOT NULL
+                GROUP BY vstdate
+                ORDER BY date DESC
+            """)
+            res = db_hos.execute(sql).fetchall()
+            for r in res:
+                if r[0] is None:
+                    continue
+                data.append({
+                    "date":          str(r[0]),
+                    "patient_count": int(r[1] or 0),
+                    "case_count":    int(r[2] or 0),
+                    "total_revenue": float(r[3] or 0),
+                    "doctor_count":  int(r[4] or 0),
+                })
+    except Exception as e:
+        print(f"[Cache Worker] Dental HOSxP Error: {e}")
+    return data
+
+
+async def task_update_dental():
+    """จัดการอัปเดตข้อมูลกราฟทันตกรรม (รันสัปดาห์ละครั้ง)"""
+    print("[Task Dental] เริ่มทำงาน...")
+    while True:
+        try:
+            dental_data = await asyncio.to_thread(fetch_dental_sync)
+            if dental_data:
+                await redis_client.set(KEY_DENTAL_CACHE, json.dumps(dental_data, ensure_ascii=False))
+                print(f"[Task Dental] อัปเดต {len(dental_data)} แถว เรียบร้อย")
+        except Exception as e:
+            print(f"[Task Dental] Loop Error: {e}")
+        await asyncio.sleep(604800)  # 7 วัน
+
+async def get_dental_data():
+    raw = await redis_client.get(KEY_DENTAL_CACHE)
+    if not raw:
+        return []
+    return json.loads(raw)
+
 async def task_update_neoq():
     print("[Task NEOQ] เริ่มทำงาน...")
     while True:
@@ -579,6 +632,7 @@ async def update_redis_cache():
     asyncio.create_task(task_update_hos())
     asyncio.create_task(task_update_neoq())
     asyncio.create_task(task_update_graph())
+    asyncio.create_task(task_update_dental())
     
     while True:
         await asyncio.sleep(3600)
