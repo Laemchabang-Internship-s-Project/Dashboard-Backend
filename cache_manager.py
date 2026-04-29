@@ -77,32 +77,100 @@ async def patch_redis_cache(new_data: dict):
         print(f"[Patch Cache] Error: {e}")
 
 
-#PG Table
 def init_analytics_db():
     with SessionAnalytics() as db:
+        # --- ต้องสร้างตารางหลักก่อน (Parent Table) ---
         db.execute(text("""
             CREATE TABLE IF NOT EXISTS hospital_logs (
                 id SERIAL PRIMARY KEY,
                 log_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 total_opd INTEGER,
                 total_walkin INTEGER,
-                total_drug_delivery INTEGER,
-                total_telemed INTEGER
+                total_telemed INTEGER,
+                total_drug_delivery INTEGER
+            );
+        """))
+        db.commit()
+        
+        # --- สร้างตารางรายแผนกตามมา (Child Table) ---
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS hospital_dept_logs (
+                id SERIAL PRIMARY KEY,
+                log_id INTEGER REFERENCES hospital_logs(id) ON DELETE CASCADE,
+                dept_code VARCHAR(10),
+                total_patients INTEGER,
+                waiting_screening INTEGER,
+                waiting_exam INTEGER,
+                waiting_lab INTEGER,
+                waiting_xray INTEGER,
+                avg_total FLOAT,
+                avg_wait_screening FLOAT,
+                avg_wait_exam FLOAT,
+                avg_wait_drug FLOAT,
+                waiting_drug INTEGER,
+                waiting_payment INTEGER,
+                go_home INTEGER
             );
         """))
         db.commit()
 
-async def save_hospital_log(data: dict):
+async def save_hospital_log(full_data: dict):
     try:
         with SessionAnalytics() as db:
-            db.execute(
+            # --- บันทึกลง Table 1 (hospital_logs) ---
+            sys = full_data.get("system", {})
+            result = db.execute(
                 text("""
                 INSERT INTO hospital_logs 
-                (total_opd, total_walkin, total_drug_delivery, total_telemed)
-                VALUES (:total_opd, :total_walkin, :total_drug_delivery, :total_telemed)
+                (total_opd, total_walkin, total_telemed, total_drug_delivery)
+                VALUES (:to, :tw, :tt, :tdd)
+                RETURNING id
                 """),
-                data
+                {
+                    "to": sys.get("total_OPD", 0),
+                    "tw": sys.get("total_walkin", 0),
+                    "tt": sys.get("hos_telemed", 0),
+                    "tdd": sys.get("total_drug_delivery", 0)
+                }
             )
+            log_id = result.fetchone()[0]
+
+            # --- บันทึกลง Table 2 (hospital_dept_logs) ---
+            clinics = full_data.get("opd_clinics", {})
+            rooms = clinics.get("rooms", [])
+            summary = full_data.get("summary", {})
+
+            for code in ["010", "062"]:
+                room = next((r for r in rooms if r["room_code"] == code), {})
+                dep_sum = summary.get(f"dep_{code}", {})
+                stats = clinics.get(f"stats_{code}", {})
+
+                db.execute(
+                    text("""
+                    INSERT INTO hospital_dept_logs 
+                    (log_id, dept_code, total_patients, waiting_screening, 
+                     waiting_exam, waiting_lab, waiting_xray, 
+                     avg_total, avg_wait_screening, avg_wait_exam, avg_wait_drug, 
+                     waiting_drug, waiting_payment, go_home)
+                    VALUES (:log_id, :code, :total, :w_screen, :w_exam, :w_lab, :w_xray,
+                            :a_total, :a_screen, :a_exam, :a_drug, :wd, :wp, :gh)
+                    """),
+                    {
+                        "log_id": log_id, "code": code,
+                        "total": room.get("total", 0),
+                        "w_screen": room.get("waiting", 0),
+                        "w_exam": stats.get("waiting_exam", 0),
+                        "w_lab": stats.get("waiting_lab", 0),
+                        "w_xray": stats.get("waiting_xray", 0),
+                        "a_total": dep_sum.get("avg_total", 0),
+                        "a_screen": dep_sum.get("avg_wait_screening", 0),
+                        "a_exam": dep_sum.get("avg_wait_exam", 0),
+                        "a_drug": dep_sum.get("avg_wait_drug", 0),
+                        "wd": dep_sum.get("waiting_drug", 0),
+                        "wp": dep_sum.get("waiting_payment", 0),
+                        "gh": room.get("finished", 0)
+                    }
+                )
             db.commit()
     except Exception as e:
         print(f"[Save Log] Error: {e}")
@@ -581,25 +649,10 @@ async def task_update_hos():
     log_counter = 0
     while True:
         try:
+            # 1. ดึงข้อมูลจาก HOSxP
             hos_data = await asyncio.to_thread(fetch_hos_sync)
             
-            if (log_counter % 60 == 0):
-                log_payload = {
-                "total_opd": (hos_data["walk_in"] + hos_data["appointment"] + 
-                             hos_data["referIn"] + hos_data["ems"] + 
-                             hos_data["telemed"] + hos_data["kiosk"]),
-                "total_walkin": hos_data["walk_in"] + hos_data["kiosk"],
-                "total_drug_delivery": hos_data["drug_delivery"],
-                "total_telemed": hos_data["telemed"]
-            }
-                await save_hospital_log(log_payload)
-                await cleanup_old_logs(days_to_keep=1095)
-                print(f"[Log Analytics] บันทึกข้อมูลเรียบร้อย (รอบที่ {log_counter // 60})")
-
-            log_counter += 1
-            if(log_counter >= 3600):
-                log_counter = 0
-
+            # 2. เตรียมข้อมูลสำหรับ Patch ลง Redis (เหมือนเดิม)
             total_walkin_kiosk = hos_data["walk_in"] + hos_data["kiosk"]
             total_hos_opd = (hos_data.get("walk_in", 0) + hos_data.get("appointment", 0) + 
                              hos_data.get("referIn", 0) + hos_data.get("ems", 0) + 
@@ -629,7 +682,21 @@ async def task_update_hos():
                     "dep_062":              hos_data["dep_062"],
                 }
             }
+            # อัปเดต Redis ทันทีเพื่อให้ Dashboard แสดงผล Real-time
             await patch_redis_cache(patch_data)
+
+            # 3. บันทึก Log ลง PostgreSQL ทุก 5 นาที (รอบที่ 60)
+            if (log_counter % 60 == 0):
+                # ดึงข้อมูลล่าสุดจาก Redis (ซึ่งมีข้อมูลจากทั้ง HOSxP และ NEOQ)
+                full_data = await get_cached_data() 
+                if full_data and "opd_clinics" in full_data:
+                    await save_hospital_log(full_data)
+                    await cleanup_old_logs(days_to_keep=1095) # เก็บ 3 ปี
+                    print(f"[Log Analytics] บันทึก 2 Tables เรียบร้อย (รอบที่ {log_counter // 60})")
+
+            log_counter += 1
+            if(log_counter >= 3600): log_counter = 0
+
         except Exception as e:
             print(f"[Task HOSxP] Loop Error: {e}")
             
