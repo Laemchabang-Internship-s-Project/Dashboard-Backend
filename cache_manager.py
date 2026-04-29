@@ -1,6 +1,7 @@
 import asyncio
 import json
 import redis.asyncio as redis
+from cache_graph import task_update_graph, task_update_dental, task_update_death, task_update_depression
 import os
 from sqlalchemy import text, bindparam
 from database_neoq import SessionLocal as SessionNEOQ
@@ -22,22 +23,8 @@ KEY_DASHBOARD_CACHE = "dashboard_full_cache"
 KEY_FUEL_CACHE   = "fuel_latest"
 KEY_FUEL_HISTORY = "fuel_history"   # Redis List เก็บ 100 รายการล่าสุด
 FUEL_HISTORY_MAX = 100
-# Doctor Operations — แยก 3 ระดับ
-KEY_GRAPH_RAW_FULL= "graph_doctor_raw_full"   # raw data เต็มตั้งแต่ 2010 (ใช้สำหรับ Merge)
-KEY_GRAPH_DAILY   = "graph_doctor_daily"    # daily rows 90 วันล่าสุด
-KEY_GRAPH_MONTHLY = "graph_doctor_monthly"  # monthly agg ทุกปี
-KEY_GRAPH_YOY     = "graph_doctor_yoy"      # yoy agg รายปี-เดือน
+    # latest row สำหรับ KPI cards
 
-# Dental — แยก 3 ระดับ
-KEY_DENTAL_RAW_FULL= "graph_dental_raw_full" # raw data เต็มตั้งแต่ 2010 (ใช้สำหรับ Merge)
-KEY_DENTAL_DAILY   = "graph_dental_daily"   # daily rows 90 วันล่าสุด
-KEY_DENTAL_MONTHLY = "graph_dental_monthly" # monthly agg ทุกปี
-KEY_DENTAL_YOY     = "graph_dental_yoy"     # yoy agg รายปี-เดือน
-KEY_DENTAL_META    = "graph_dental_meta"    # latest row สำหรับ KPI cards
-
-# (compat) — เก็บไว้เผื่อมีโค้ดเก่าอ้างถึง
-KEY_GRAPH_CACHE  = KEY_GRAPH_DAILY
-KEY_DENTAL_CACHE = KEY_DENTAL_DAILY
 
 # ==========================================================
 # Helper: Redis
@@ -245,76 +232,6 @@ def fetch_hos_sync():
         
     return hos_data
 
-def fetch_graph_incremental_sync(existing_data):
-    """ดึงข้อมูลกราฟการผ่าตัดของแพทย์ แบบ Incremental (ทบของเดิม)"""
-    from datetime import date, timedelta
-    today = date.today()
-    
-    if not existing_data:
-        start_date_str = '2010-01-01'
-        existing_data = {}
-    else:
-        # ถ้ามีข้อมูลเก่าอยู่แล้ว ดึงแค่ 30 วันย้อนหลัง (เผื่อแก้ข้อมูลย้อนหลัง)
-        start_date_obj = today - timedelta(days=30)
-        start_date_str = start_date_obj.strftime('%Y-%m-%d')
-        # Reset 30 วันที่ผ่านมาเป็น 0 ก่อน เพื่อรองรับเคสที่มีการ Delete ข้อมูลใน DB
-        curr = start_date_obj
-        while curr <= today:
-            existing_data[curr.strftime('%Y-%m-%d')] = 0
-            curr += timedelta(days=1)
-
-    try:
-        with SessionHOS() as db_hos:
-            sql = text("""
-                SELECT
-                    DATE(begin_date_time)       AS op_date,
-                    COUNT(*)                    AS total_operations
-                FROM doctor_operation
-                WHERE
-                    begin_date_time IS NOT NULL
-                    AND begin_date_time >= :start_date
-                    AND begin_date_time <= CURDATE()
-                    AND begin_date_time != '0001-01-01'
-                GROUP BY DATE(begin_date_time)
-            """)
-            rows = db_hos.execute(sql, {"start_date": start_date_str}).fetchall()
-
-            for r in rows:
-                existing_data[str(r[0])] = int(r[1])
-    except Exception as e:
-        print(f"[Cache Worker] Graph HOSxP Error: {e}")
-
-    # --- Aggregation ล่าสุด ---
-    daily, monthly_map, yoy_map = [], {}, {}
-    cutoff = today - timedelta(days=90)
-    
-    for op_date in sorted(existing_data.keys()):
-        total = existing_data[op_date]
-        if total == 0:
-            continue
-            
-        yr = op_date[:4]
-        mo = op_date[5:7]
-
-        # daily
-        if op_date >= cutoff.strftime('%Y-%m-%d'):
-            daily.append({"op_date": op_date, "total_operations": total})
-
-        # monthly
-        key = (yr, mo)
-        monthly_map[key] = monthly_map.get(key, 0) + total
-
-        # yoy
-        if yr not in yoy_map:
-            yoy_map[yr] = {}
-        yoy_map[yr][mo] = yoy_map[yr].get(mo, 0) + total
-
-    monthly = [
-        {"year": yr, "month": mo, "total": total}
-        for (yr, mo), total in sorted(monthly_map.items())
-    ]
-    
-    return daily, monthly, yoy_map, existing_data
 
 def fetch_neoq_sync():
     opd_total = appointment = walk_in = 0
@@ -569,220 +486,8 @@ async def task_update_hos():
             
         await asyncio.sleep(5)
 
-async def task_update_graph():
-    """อัปเดต Doctor Operations Cache แบบ Incremental"""
-    print("[Task Graph] เริ่มทำงาน (Incremental)...")
-    while True:
-        try:
-            # 1. โหลดข้อมูลเต็มเก่าจาก Redis (ประมาณ 200 KB)
-            raw_full_str = await redis_client.get(KEY_GRAPH_RAW_FULL)
-            existing_data = json.loads(raw_full_str) if raw_full_str else {}
-            
-            # 2. ไปดึงและอัปเดต
-            daily, monthly, yoy, full_data = await asyncio.to_thread(fetch_graph_incremental_sync, existing_data)
-            
-            # 3. บันทึกกลับ
-            pipe = redis_client.pipeline()
-            pipe.set(KEY_GRAPH_RAW_FULL, json.dumps(full_data, ensure_ascii=False))
-            if daily:
-                pipe.set(KEY_GRAPH_DAILY,   json.dumps(daily,   ensure_ascii=False))
-            if monthly:
-                pipe.set(KEY_GRAPH_MONTHLY, json.dumps(monthly, ensure_ascii=False))
-            if yoy:
-                pipe.set(KEY_GRAPH_YOY,     json.dumps(yoy,     ensure_ascii=False))
-            await pipe.execute()
-            print(f"[Task Graph] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
-        except Exception as e:
-            print(f"[Task Graph] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
-
-async def get_graph_data(view: str = "daily", month: str = None, year: str = None):
-    """
-    ดึงข้อมูล Doctor Operations จาก Redis ตาม view:
-      - daily  : ส่ง daily rows (90 วัน) — filter by month ถ้ามี
-      - monthly: ส่ง monthly agg — filter by year ถ้ามี
-      - yoy    : ส่ง yoy dict ทุกปี
-    """
-    if view == "monthly":
-        raw = await redis_client.get(KEY_GRAPH_MONTHLY)
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if year:
-            data = [r for r in data if r["year"] == year]
-        return data
-
-    elif view == "yoy":
-        raw = await redis_client.get(KEY_GRAPH_YOY)
-        return json.loads(raw) if raw else {}
-
-    else:  # daily (default)
-        raw = await redis_client.get(KEY_GRAPH_DAILY)
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if month:  # 'YYYY-MM'
-            data = [r for r in data if r["op_date"].startswith(month)]
-        return data
-
-def fetch_dental_incremental_sync(existing_data):
-    """ดึงข้อมูลทันตกรรม แบบ Incremental (ทบของเดิม)"""
-    from datetime import date, timedelta
-    today = date.today()
-    
-    if not existing_data:
-        start_date_str = '2010-01-01'
-        existing_data = {}
-    else:
-        start_date_obj = today - timedelta(days=30)
-        start_date_str = start_date_obj.strftime('%Y-%m-%d')
-        # Reset 30 วันที่ผ่านมาเป็น 0
-        curr = start_date_obj
-        while curr <= today:
-            d_str = curr.strftime('%Y-%m-%d')
-            existing_data[d_str] = {"patient_count": 0, "case_count": 0, "total_revenue": 0.0, "doctor_count": 0}
-            curr += timedelta(days=1)
-
-    try:
-        with SessionHOS() as db_hos:
-            sql = text("""
-                SELECT
-                    vstdate                    AS date,
-                    COUNT(DISTINCT hn)         AS patient_count,
-                    COUNT(dtmain_id)           AS case_count,
-                    COALESCE(SUM(fee), 0)      AS total_revenue,
-                    COUNT(DISTINCT doctor)     AS doctor_count
-                FROM dtmain
-                WHERE vstdate >= :start_date
-                  AND vstdate <= CURDATE()
-                GROUP BY vstdate
-            """)
-            rows = db_hos.execute(sql, {"start_date": start_date_str}).fetchall()
-
-            for r in rows:
-                if r[0] is None:
-                    continue
-                d_str = str(r[0])
-                existing_data[d_str] = {
-                    "patient_count": int(r[1] or 0),
-                    "case_count":    int(r[2] or 0),
-                    "total_revenue": float(r[3] or 0),
-                    "doctor_count":  int(r[4] or 0),
-                }
-    except Exception as e:
-        print(f"[Cache Worker] Dental HOSxP Error: {e}")
-
-    # --- Aggregation ล่าสุด ---
-    daily, monthly_map, yoy_map, meta = [], {}, {}, None
-    cutoff = today - timedelta(days=90)
-    
-    for d_str in sorted(existing_data.keys()):
-        row_data = existing_data[d_str]
-        if row_data["case_count"] == 0:
-            continue
-            
-        yr = d_str[:4]
-        mo = d_str[5:7]
-
-        row = {
-            "date": d_str,
-            "patient_count": row_data["patient_count"],
-            "case_count":    row_data["case_count"],
-            "total_revenue": row_data["total_revenue"],
-            "doctor_count":  row_data["doctor_count"]
-        }
-
-        # daily
-        if d_str >= cutoff.strftime('%Y-%m-%d'):
-            daily.append(row)
-
-        # monthly
-        key = (yr, mo)
-        if key not in monthly_map:
-            monthly_map[key] = {"patient_count": 0, "case_count": 0, "total_revenue": 0.0, "doctor_count": 0}
-        monthly_map[key]["patient_count"] += row["patient_count"]
-        monthly_map[key]["case_count"]    += row["case_count"]
-        monthly_map[key]["total_revenue"] += row["total_revenue"]
-        monthly_map[key]["doctor_count"]  += row["doctor_count"]
-
-        # yoy
-        if yr not in yoy_map:
-            yoy_map[yr] = {}
-        if mo not in yoy_map[yr]:
-            yoy_map[yr][mo] = {"patient_count": 0, "case_count": 0, "total_revenue": 0.0, "doctor_count": 0}
-        yoy_map[yr][mo]["patient_count"] += row["patient_count"]
-        yoy_map[yr][mo]["case_count"]    += row["case_count"]
-        yoy_map[yr][mo]["total_revenue"] += row["total_revenue"]
-        yoy_map[yr][mo]["doctor_count"]  += row["doctor_count"]
-
-        meta = row  # ล่าสุด
-
-    monthly = [
-        {"year": yr, "month": mo, **vals}
-        for (yr, mo), vals in sorted(monthly_map.items())
-    ]
-    return daily, monthly, yoy_map, meta, existing_data
 
 
-async def task_update_dental():
-    """อัปเดต Dental Cache แบบ Incremental"""
-    print("[Task Dental] เริ่มทำงาน (Incremental)...")
-    while True:
-        try:
-            raw_full_str = await redis_client.get(KEY_DENTAL_RAW_FULL)
-            existing_data = json.loads(raw_full_str) if raw_full_str else {}
-            
-            daily, monthly, yoy, meta, full_data = await asyncio.to_thread(fetch_dental_incremental_sync, existing_data)
-            
-            pipe = redis_client.pipeline()
-            pipe.set(KEY_DENTAL_RAW_FULL, json.dumps(full_data, ensure_ascii=False))
-            if daily:
-                pipe.set(KEY_DENTAL_DAILY,   json.dumps(daily,   ensure_ascii=False))
-            if monthly:
-                pipe.set(KEY_DENTAL_MONTHLY, json.dumps(monthly, ensure_ascii=False))
-            if yoy:
-                pipe.set(KEY_DENTAL_YOY,     json.dumps(yoy,     ensure_ascii=False))
-            if meta:
-                pipe.set(KEY_DENTAL_META,    json.dumps(meta,    ensure_ascii=False))
-            await pipe.execute()
-            print(f"[Task Dental] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
-        except Exception as e:
-            print(f"[Task Dental] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
-
-async def get_dental_data(view: str = "daily", month: str = None, year: str = None):
-    """
-    ดึงข้อมูล Dental จาก Redis ตาม view:
-      - daily  : daily rows (90 วัน) — filter by month
-      - monthly: monthly agg — filter by year
-      - yoy    : yoy dict ทุกปี
-      - meta   : latest row (KPI cards)
-    """
-    if view == "monthly":
-        raw = await redis_client.get(KEY_DENTAL_MONTHLY)
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if year:
-            data = [r for r in data if r["year"] == year]
-        return data
-
-    elif view == "yoy":
-        raw = await redis_client.get(KEY_DENTAL_YOY)
-        return json.loads(raw) if raw else {}
-
-    elif view == "meta":
-        raw = await redis_client.get(KEY_DENTAL_META)
-        return json.loads(raw) if raw else None
-
-    else:  # daily (default)
-        raw = await redis_client.get(KEY_DENTAL_DAILY)
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if month:
-            data = [r for r in data if r["date"].startswith(month)]
-        return data
 
 async def task_update_neoq():
     print("[Task NEOQ] เริ่มทำงาน...")
@@ -834,6 +539,8 @@ async def update_redis_cache():
     asyncio.create_task(task_update_neoq())
     asyncio.create_task(task_update_graph())
     asyncio.create_task(task_update_dental())
+    asyncio.create_task(task_update_death())
+    asyncio.create_task(task_update_depression())
     
     while True:
         await asyncio.sleep(3600)

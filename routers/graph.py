@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from cache_manager import get_graph_data, get_dental_data
+from cache_graph import get_graph_data, get_dental_data, get_death_data, get_depression_data, get_depression_unassessed_data
 
 router = APIRouter(prefix="/api/graph", tags=["Graph Data"])
 
@@ -37,3 +37,27 @@ async def get_dental_summary_graph(
     """
     data = await get_dental_data(view=view, month=month, year=year)
     return {"status": "success", "view": view, "data": data}
+
+@router.get("/death-summary")
+async def get_death_summary_graph():
+    """
+    ดึงข้อมูลกราฟสาเหตุการเสียชีวิต 10 อันดับแรก
+    """
+    data = await get_death_data()
+    return {"status": "success", "data": data}
+
+@router.get("/depression-summary")
+async def get_depression_summary_graph():
+    """
+    ดึงข้อมูลกราฟผู้ป่วยจิตเวช (ซึมเศร้า)
+    """
+    data = await get_depression_data()
+    return {"status": "success", "data": data}
+
+@router.get("/depression-unassessed")
+async def get_depression_unassessed_graph():
+    """
+    ดึงรายชื่อผู้ป่วยจิตเวชที่ยังไม่ได้ประเมิน (สำหรับ Drill-down)
+    """
+    data = await get_depression_unassessed_data()
+    return {"status": "success", "data": data}
