@@ -20,3 +20,5 @@ docker-compose.yml
 # Misc
 README.md
 *.md
+
+postgres_data/
