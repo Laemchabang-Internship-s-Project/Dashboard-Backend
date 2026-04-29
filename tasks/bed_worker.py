@@ -46,4 +46,4 @@ async def task_update_beds():
             print(f"[Task Beds] Loop Error: {e}")
         
         # หน่วงเวลา 60 วินาที (1 นาที)
-        await asyncio.sleep(10)
+        await asyncio.sleep(60)
