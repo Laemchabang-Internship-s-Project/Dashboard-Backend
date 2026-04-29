@@ -5,6 +5,8 @@ import os
 from sqlalchemy import text, bindparam
 from database_neoq import SessionLocal as SessionNEOQ
 from database_hos import SessionLocal as SessionHOS
+from database_analytics import SessionAnalytics
+from datetime import datetime, timedelta
 
 # ==========================================================
 # Redis Connection
@@ -74,6 +76,50 @@ async def patch_redis_cache(new_data: dict):
     except Exception as e:
         print(f"[Patch Cache] Error: {e}")
 
+
+#PG Table
+def init_analytics_db():
+    with SessionAnalytics() as db:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS hospital_logs (
+                id SERIAL PRIMARY KEY,
+                log_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                total_opd INTEGER,
+                total_walkin INTEGER,
+                total_drug_delivery INTEGER,
+                total_telemed INTEGER
+            );
+        """))
+        db.commit()
+
+async def save_hospital_log(data: dict):
+    try:
+        with SessionAnalytics() as db:
+            db.execute(
+                text("""
+                INSERT INTO hospital_logs 
+                (total_opd, total_walkin, total_drug_delivery, total_telemed)
+                VALUES (:total_opd, :total_walkin, :total_drug_delivery, :total_telemed)
+                """),
+                data
+            )
+            db.commit()
+    except Exception as e:
+        print(f"[Save Log] Error: {e}")
+
+async def cleanup_old_logs(days_to_keep: int = 1095): 
+    """ลบข้อมูล Log ที่เก่ากว่า 3 ปี"""
+    try:
+        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+        with SessionAnalytics() as db:
+            db.execute(
+                text("DELETE FROM hospital_logs WHERE log_time < :cutoff"),
+                {"cutoff": cutoff_date}
+            )
+            db.commit()
+            print(f"[Cleanup] สำเร็จ: ลบข้อมูลที่เก่ากว่าวันที่ {cutoff_date.date()} เรียบร้อย")
+    except Exception as e:
+        print(f"[Cleanup Error] : {e}")
 # ==========================================================
 # Fuel Data — Webhook-driven
 # ==========================================================
@@ -530,10 +576,30 @@ def fetch_neoq_sync():
 async def task_update_hos():
     """จัดการอัปเดตข้อมูลฝั่ง HOSxP ทุก 5 วินาที"""
     print("[Task HOSxP] เริ่มทำงาน...")
+    init_analytics_db()
+
+    log_counter = 0
     while True:
         try:
             hos_data = await asyncio.to_thread(fetch_hos_sync)
             
+            if (log_counter % 60 == 0):
+                log_payload = {
+                "total_opd": (hos_data["walk_in"] + hos_data["appointment"] + 
+                             hos_data["referIn"] + hos_data["ems"] + 
+                             hos_data["telemed"] + hos_data["kiosk"]),
+                "total_walkin": hos_data["walk_in"] + hos_data["kiosk"],
+                "total_drug_delivery": hos_data["drug_delivery"],
+                "total_telemed": hos_data["telemed"]
+            }
+                await save_hospital_log(log_payload)
+                await cleanup_old_logs(days_to_keep=1095)
+                print(f"[Log Analytics] บันทึกข้อมูลเรียบร้อย (รอบที่ {log_counter // 60})")
+
+            log_counter += 1
+            if(log_counter >= 3600):
+                log_counter = 0
+
             total_walkin_kiosk = hos_data["walk_in"] + hos_data["kiosk"]
             total_hos_opd = (hos_data.get("walk_in", 0) + hos_data.get("appointment", 0) + 
                              hos_data.get("referIn", 0) + hos_data.get("ems", 0) + 
