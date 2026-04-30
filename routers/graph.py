@@ -39,20 +39,26 @@ async def get_dental_summary_graph(
     return {"status": "success", "view": view, "data": data}
 
 @router.get("/death-summary")
-async def get_death_summary_graph():
+async def get_death_summary_graph(
+    view: str = Query("causes", description="causes | monthly | places | hours")
+):
     """
-    ดึงข้อมูลกราฟสาเหตุการเสียชีวิต 10 อันดับแรก
+    ดึงข้อมูลสถิติการเสียชีวิต
     """
-    data = await get_death_data()
-    return {"status": "success", "data": data}
+    data = await get_death_data(view=view)
+    return {"status": "success", "view": view, "data": data}
 
 @router.get("/depression-summary")
-async def get_depression_summary_graph():
+async def get_depression_summary_graph(
+    view:  str           = Query("daily",  description="daily | monthly | yoy | status | kpi"),
+    month: Optional[str] = Query(None,     description="กรอง daily ตามเดือน เช่น '2025-04'"),
+    year:  Optional[str] = Query(None,     description="กรอง monthly ตามปี เช่น '2025'"),
+):
     """
-    ดึงข้อมูลกราฟผู้ป่วยจิตเวช (ซึมเศร้า)
+    ดึงข้อมูลกราฟผู้ป่วยจิตเวช (ซึมเศร้า) (อัปเดตสัปดาห์ละ 1 ครั้ง)
     """
-    data = await get_depression_data()
-    return {"status": "success", "data": data}
+    data = await get_depression_data(view=view, month=month, year=year)
+    return {"status": "success", "view": view, "data": data}
 
 @router.get("/depression-unassessed")
 async def get_depression_unassessed_graph():
@@ -61,3 +67,10 @@ async def get_depression_unassessed_graph():
     """
     data = await get_depression_unassessed_data()
     return {"status": "success", "data": data}
+
+from cache_graph import task_update_depression
+import asyncio
+@router.get("/trigger-depression")
+async def trigger_depression():
+    asyncio.create_task(task_update_depression())
+    return {"status": "success", "message": "Triggered"}
