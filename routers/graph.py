@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from cache_graph import get_graph_data, get_dental_data, get_death_data, get_depression_data, get_depression_unassessed_data
+from cache_graph import get_graph_data, get_dental_data, get_death_data, get_depression_data
 
 router = APIRouter(prefix="/api/graph", tags=["Graph Data"])
 
@@ -40,12 +40,14 @@ async def get_dental_summary_graph(
 
 @router.get("/death-summary")
 async def get_death_summary_graph(
-    view: str = Query("causes", description="causes | monthly | places | hours")
+    view: str = Query("causes", description="causes | monthly | places | hours"),
+    month: Optional[str] = Query(None, description="กรองตามเดือน เช่น '2025-04'"),
+    year:  Optional[str] = Query(None, description="กรองตามปี เช่น '2025'")
 ):
     """
     ดึงข้อมูลสถิติการเสียชีวิต
     """
-    data = await get_death_data(view=view)
+    data = await get_death_data(view=view, month=month, year=year)
     return {"status": "success", "view": view, "data": data}
 
 @router.get("/depression-summary")
@@ -60,13 +62,6 @@ async def get_depression_summary_graph(
     data = await get_depression_data(view=view, month=month, year=year)
     return {"status": "success", "view": view, "data": data}
 
-@router.get("/depression-unassessed")
-async def get_depression_unassessed_graph():
-    """
-    ดึงรายชื่อผู้ป่วยจิตเวชที่ยังไม่ได้ประเมิน (สำหรับ Drill-down)
-    """
-    data = await get_depression_unassessed_data()
-    return {"status": "success", "data": data}
 
 from cache_graph import task_update_depression
 import asyncio

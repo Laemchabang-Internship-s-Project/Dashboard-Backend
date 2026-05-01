@@ -42,7 +42,6 @@ KEY_DEPRESSION_MONTHLY  = "graph_depression_monthly"
 KEY_DEPRESSION_YOY      = "graph_depression_yoy"
 KEY_DEPRESSION_STATUS   = "graph_depression_status"
 KEY_DEPRESSION_KPI      = "graph_depression_kpi"
-KEY_DEPRESSION_UNASSESSED_CACHE = "graph_depression_unassessed"
 
 
 # ==========================================================
@@ -318,19 +317,19 @@ def fetch_death_sync():
     }
     try:
         with SessionHOS() as db_hos:
-            # 1. Top 10 Causes
+            # 1. Top Causes (grouped by year/month for filtering)
             sql_causes = text("""
                 SELECT 
                     death_cause_text AS cause,
+                    COALESCE(DATE_FORMAT(NULLIF(death_date, '0000-00-00'), '%Y'), 'Unknown') AS year,
+                    COALESCE(DATE_FORMAT(NULLIF(death_date, '0000-00-00'), '%m'), 'Unknown') AS month,
                     COUNT(death_id) AS total_cases
                 FROM death
                 WHERE death_cause_text IS NOT NULL AND death_cause_text != ''
-                GROUP BY death_cause_text
-                ORDER BY total_cases DESC
-                LIMIT 10;
+                GROUP BY cause, year, month;
             """)
             rows_causes = db_hos.execute(sql_causes).fetchall()
-            data["top_causes"] = [{"cause": r[0], "total_cases": int(r[1])} for r in rows_causes]
+            data["top_causes"] = [{"cause": r[0], "year": r[1], "month": r[2], "total_cases": int(r[3])} for r in rows_causes]
 
             # 2. Monthly Trend
             sql_trend = text("""
@@ -404,7 +403,7 @@ async def task_update_death():
             print(f"[Task Death] Loop Error: {e}")
         await asyncio.sleep(604800)  # 7 วัน
 
-async def get_death_data(view: str = "causes"):
+async def get_death_data(view: str = "causes", month: str = None, year: str = None):
     if view == "monthly":
         raw = await redis_client.get(KEY_DEATH_MONTHLY)
         return json.loads(raw) if raw else []
@@ -416,7 +415,31 @@ async def get_death_data(view: str = "causes"):
         return json.loads(raw) if raw else []
     else: # causes
         raw = await redis_client.get(KEY_DEATH_CAUSES)
-        return json.loads(raw) if raw else []
+        if not raw:
+            return []
+        data = json.loads(raw)
+        
+        # Filter by year and month
+        if year:
+            data = [r for r in data if r.get("year") == year]
+        if month:
+            parts = month.split("-")
+            if len(parts) == 2:
+                data = [r for r in data if r.get("year") == parts[0] and r.get("month") == parts[1]]
+                
+        # Aggregate
+        agg = {}
+        for r in data:
+            cause = r["cause"]
+            agg[cause] = agg.get(cause, 0) + r["total_cases"]
+            
+        # Sort and get top 10
+        sorted_causes = sorted(
+            [{"cause": k, "total_cases": v} for k, v in agg.items()], 
+            key=lambda x: x["total_cases"], 
+            reverse=True
+        )[:10]
+        return sorted_causes
 
 
 # ==========================================================
@@ -506,18 +529,18 @@ async def fetch_depression_sync(existing_trend_data):
 
     try:
         with SessionHOS() as db_hos:
-            # 2. Status Summary (ดึงใหม่เสมอเพราะสถานะเปลี่ยนได้ แต่กรองย้อนหลัง 3 ปีเพื่อความเร็ว)
+            # 2. Status Summary (group by year for filtering)
             sql_status = text("""
                 SELECT 
                     COALESCE(s.depression_status_name, 'ยังไม่ได้ประเมิน') AS status_name,
+                    COALESCE(DATE_FORMAT(NULLIF(p.register_date, '0000-00-00'), '%Y'), 'Unknown') AS year,
                     COUNT(p.hn) AS patient_count
                 FROM patient_depression p
                 LEFT JOIN depression_status s ON p.depression_status_id = s.depression_status_id
-                GROUP BY status_name
-                ORDER BY patient_count DESC;
+                GROUP BY status_name, year;
             """)
             rows_status = db_hos.execute(sql_status).fetchall()
-            data["status_summary"] = [{"status_name": r[0], "patient_count": int(r[1])} for r in rows_status]
+            data["status_summary"] = [{"status_name": r[0], "year": r[1], "patient_count": int(r[2])} for r in rows_status]
 
             # 3. KPI
             sql_kpi = text("""
@@ -542,49 +565,6 @@ async def fetch_depression_sync(existing_trend_data):
         print(f"[Cache Worker] Depression Summary Error: {e}")
         return data, full_data
 
-def fetch_depression_unassessed_sync():
-    data = []
-    try:
-        with SessionHOS() as db_hos:
-            # ใช้ Query ชุดใหม่ที่คุณส่งมา พร้อมดึงย้อนหลังแค่ 1 ปีเพื่อประหยัดทรัพยากร
-            sql = text("""
-                SELECT 
-                    p.hn,
-                    CONCAT(COALESCE(p.pname,''), COALESCE(p.fname,''), ' ', COALESCE(p.lname,'')) AS patient_name,
-                    p.sex,
-                    FLOOR(DATEDIFF(CURDATE(), STR_TO_DATE(p.birthday, '%d/%m/%Y')) / 365.25) AS age,
-                    c.emp_citizenship_name AS citizenship,
-                    d.register_date,
-                    COALESCE(s.depression_status_name, 'ยังไม่ได้ประเมิน') AS status_name,
-                    p.moopart, p.tmbpart, p.amppart, p.chwpart
-                FROM patient_depression d
-                LEFT JOIN patient p ON d.hn = p.hn
-                LEFT JOIN depression_status s ON d.depression_status_id = s.depression_status_id
-                LEFT JOIN emp_citizenship c ON p.citizenship = c.emp_citizenship_id
-                WHERE (d.depression_status_id IS NULL OR d.depression_status_id = '')
-                  AND (d.discharge = 'N' OR d.discharge IS NULL OR d.discharge = '')
-                  AND d.register_date IS NOT NULL
-                  AND d.register_date >= DATE_SUB(CURDATE(), INTERVAL 3 YEAR)
-                ORDER BY d.register_date DESC
-                LIMIT 2000;
-            """)
-            rows = db_hos.execute(sql).fetchall()
-            for r in rows:
-                data.append({
-                    "hn": r[0] if r[0] else "-",
-                    "patient_name": r[1] if r[1] else "ไม่ทราบชื่อ",
-                    "sex": "ชาย" if r[2] == '1' else "หญิง" if r[2] == '2' else "-",
-                    "age": int(r[3]) if r[3] is not None else "-",
-                    "citizenship": r[4] if r[4] else "-",
-                    "register_date": str(r[5]) if r[5] else "-",
-                    "status": r[6],
-                    "address": f"ม.{r[7]} ต.{r[8]} อ.{r[9]} จ.{r[10]}" if r[7] else "-"
-                })
-            return data
-    except Exception as e:
-        print(f"[Cache Worker] Depression Unassessed Error: {e}")
-        return data
-
 async def task_update_depression():
     print("[Task Depression] เริ่มทำงาน (Incremental)...")
     while True:
@@ -606,11 +586,8 @@ async def task_update_depression():
                 pipe.set(KEY_DEPRESSION_STATUS,  json.dumps(summary_data.get("status_summary", []), ensure_ascii=False))
                 pipe.set(KEY_DEPRESSION_KPI,     json.dumps(summary_data.get("kpi", {}), ensure_ascii=False))
             
-            unassessed_data = await asyncio.to_thread(fetch_depression_unassessed_sync)
-            pipe.set(KEY_DEPRESSION_UNASSESSED_CACHE, json.dumps(unassessed_data, ensure_ascii=False))
-            
             await pipe.execute()
-            print(f"[Task Depression] อัปเดตสำเร็จ: Cache={len(full_trend)} days, Unassessed={len(unassessed_data)} rows")
+            print(f"[Task Depression] อัปเดตสำเร็จ: Cache={len(full_trend)} days")
 
         except Exception as e:
             print(f"[Task Depression] Loop Error: {e}")
@@ -628,7 +605,19 @@ async def get_depression_data(view: str = "daily", month: str = None, year: str 
         return json.loads(raw) if raw else {}
     elif view == "status":
         raw = await redis_client.get(KEY_DEPRESSION_STATUS)
-        return json.loads(raw) if raw else []
+        if not raw: return []
+        data = json.loads(raw)
+        
+        if year:
+            data = [r for r in data if r.get("year") == year]
+            
+        # Aggregate after filtering
+        agg = {}
+        for r in data:
+            status = r["status_name"]
+            agg[status] = agg.get(status, 0) + r["patient_count"]
+            
+        return [{"status_name": k, "patient_count": v} for k, v in sorted(agg.items(), key=lambda x: x[1], reverse=True)]
     elif view == "kpi":
         raw = await redis_client.get(KEY_DEPRESSION_KPI)
         return json.loads(raw) if raw else {}
@@ -639,6 +628,3 @@ async def get_depression_data(view: str = "daily", month: str = None, year: str 
         if month: data = [r for r in data if r["date"].startswith(month)]
         return data
 
-async def get_depression_unassessed_data():
-    raw = await redis_client.get(KEY_DEPRESSION_UNASSESSED_CACHE)
-    return json.loads(raw) if raw else []
