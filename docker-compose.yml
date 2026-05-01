@@ -41,6 +41,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      db-analytics:
+        condition: service_started
 
     networks:
       - lcbh_network

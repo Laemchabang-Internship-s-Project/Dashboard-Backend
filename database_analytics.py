@@ -2,6 +2,7 @@ import os
 import urllib.parse # เพิ่มการ import นี้
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 
 def get_env(name: str):
     value = os.getenv(name)
@@ -24,3 +25,11 @@ engine = create_engine(
 )
 
 SessionAnalytics = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+BaseAnalytics = declarative_base()
+
+def get_analytics_db():
+    db = SessionAnalytics()
+    try:
+        yield db
+    finally:
+        db.close()

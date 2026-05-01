@@ -9,7 +9,7 @@ from utils.security import get_api_key
 
 router = APIRouter()
 
-MAX_DATE_RANGE_DAYS = 90
+MAX_DATE_RANGE_DAYS = 400
 
 @router.get("/api/dashboard/summary-range")
 @limiter.limit("30/minute")

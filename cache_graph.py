@@ -347,7 +347,7 @@ def fetch_death_sync():
             except Exception as e:
                 print(f"[Cache Worker] Death Trend Error: {e}")
 
-            # 3. Places
+            # 3. Places (เพิ่ม year/month เพื่อกรองได้)
             sql_places = text("""
                 SELECT 
                     CASE death_place 
@@ -355,13 +355,15 @@ def fetch_death_sync():
                         WHEN '2' THEN 'นอกโรงพยาบาล' 
                         ELSE 'ไม่ระบุ' 
                     END AS place_name,
+                    COALESCE(DATE_FORMAT(NULLIF(death_date,'0000-00-00'),'%Y'), 'Unknown') AS year,
+                    COALESCE(DATE_FORMAT(NULLIF(death_date,'0000-00-00'),'%m'), 'Unknown') AS month,
                     COUNT(death_id) AS count
                 FROM death
-                GROUP BY death_place;
+                GROUP BY death_place, year, month;
             """)
             try:
                 rows_places = db_hos.execute(sql_places).fetchall()
-                data["places"] = [{"place_name": r[0], "count": int(r[1])} for r in rows_places]
+                data["places"] = [{"place_name": r[0], "year": r[1], "month": r[2], "count": int(r[3])} for r in rows_places]
             except Exception as e:
                 print(f"[Cache Worker] Death Places Error: {e}")
 
@@ -409,16 +411,51 @@ async def get_death_data(view: str = "causes", month: str = None, year: str = No
         return json.loads(raw) if raw else []
     elif view == "places":
         raw = await redis_client.get(KEY_DEATH_PLACES)
-        return json.loads(raw) if raw else []
+        if not raw:
+            return [{"place_name": "ไม่ระบุ", "count": 0}, {"place_name": "ในโรงพยาบาล", "count": 0}]
+        data = json.loads(raw)
+
+        # ถ้าไม่ระบุปี/เดือน ให้ดึงปีล่าสุดอัตโนมัติ
+        if not year and not month:
+            available_years = sorted(set(r.get("year", "") for r in data if r.get("year") not in ("", "Unknown")), reverse=True)
+            if available_years:
+                year = available_years[0]
+                # ดึงเดือนล่าสุดในปีนั้นด้วย
+                months_in_year = sorted(set(r.get("month","") for r in data if r.get("year")==year and r.get("month") not in ("","Unknown")), reverse=True)
+                if months_in_year:
+                    month = f"{year}-{months_in_year[0]}"
+
+        if year:
+            data = [r for r in data if r.get("year") == year]
+        if month:
+            parts = month.split("-")
+            if len(parts) == 2:
+                data = [r for r in data if r.get("year") == parts[0] and r.get("month") == parts[1]]
+
+        # Aggregate ตาม place_name
+        agg = {}
+        for r in data:
+            name = r["place_name"]
+            agg[name] = agg.get(name, 0) + r["count"]
+
+        if not agg:
+            return [{"place_name": "ไม่ระบุ", "count": 0}, {"place_name": "ในโรงพยาบาล", "count": 0}]
+        return sorted([{"place_name": k, "count": v} for k, v in agg.items()], key=lambda x: x["count"], reverse=True)
     elif view == "hours":
         raw = await redis_client.get(KEY_DEATH_HOURS)
         return json.loads(raw) if raw else []
     else: # causes
         raw = await redis_client.get(KEY_DEATH_CAUSES)
         if not raw:
-            return []
+            return [{"cause": "ไม่พบข้อมูล", "total_cases": 0}]
         data = json.loads(raw)
         
+        # ถ้าไม่ระบุปี ให้หาปีล่าสุดที่มีข้อมูลแล้วใช้เป็น default
+        if not year and not month:
+            available_years = sorted(set(r.get("year", "") for r in data if r.get("year") not in ("", "Unknown")), reverse=True)
+            if available_years:
+                year = available_years[0]
+
         # Filter by year and month
         if year:
             data = [r for r in data if r.get("year") == year]
@@ -439,6 +476,10 @@ async def get_death_data(view: str = "causes", month: str = None, year: str = No
             key=lambda x: x["total_cases"], 
             reverse=True
         )[:10]
+        
+        # ถ้ายังเป็นว่าง เติมแถว 0 เพื่อให้ frontend แสดงกราฟเปล่าได้
+        if not sorted_causes:
+            return [{"cause": "ไม่พบข้อมูล", "total_cases": 0}]
         return sorted_causes
 
 
@@ -529,18 +570,19 @@ async def fetch_depression_sync(existing_trend_data):
 
     try:
         with SessionHOS() as db_hos:
-            # 2. Status Summary (group by year for filtering)
+            # 2. Status Summary (group by year and month for filtering)
             sql_status = text("""
                 SELECT 
                     COALESCE(s.depression_status_name, 'ยังไม่ได้ประเมิน') AS status_name,
                     COALESCE(DATE_FORMAT(NULLIF(p.register_date, '0000-00-00'), '%Y'), 'Unknown') AS year,
+                    COALESCE(DATE_FORMAT(NULLIF(p.register_date, '0000-00-00'), '%m'), 'Unknown') AS month,
                     COUNT(p.hn) AS patient_count
                 FROM patient_depression p
                 LEFT JOIN depression_status s ON p.depression_status_id = s.depression_status_id
-                GROUP BY status_name, year;
+                GROUP BY status_name, year, month;
             """)
             rows_status = db_hos.execute(sql_status).fetchall()
-            data["status_summary"] = [{"status_name": r[0], "year": r[1], "patient_count": int(r[2])} for r in rows_status]
+            data["status_summary"] = [{"status_name": r[0], "year": r[1], "month": r[2], "patient_count": int(r[3])} for r in rows_status]
 
             # 3. KPI
             sql_kpi = text("""
@@ -610,14 +652,21 @@ async def get_depression_data(view: str = "daily", month: str = None, year: str 
         
         if year:
             data = [r for r in data if r.get("year") == year]
+        if month:
+            parts = month.split("-")
+            if len(parts) == 2:
+                data = [r for r in data if r.get("year") == parts[0] and r.get("month") == parts[1]]
             
         # Aggregate after filtering
         agg = {}
         for r in data:
             status = r["status_name"]
             agg[status] = agg.get(status, 0) + r["patient_count"]
-            
-        return [{"status_name": k, "patient_count": v} for k, v in sorted(agg.items(), key=lambda x: x[1], reverse=True)]
+        
+        result = [{"status_name": k, "patient_count": v} for k, v in sorted(agg.items(), key=lambda x: x[1], reverse=True)]
+        if not result:
+            return [{"status_name": "ไม่พบข้อมูล", "patient_count": 0}]
+        return result
     elif view == "kpi":
         raw = await redis_client.get(KEY_DEPRESSION_KPI)
         return json.loads(raw) if raw else {}
