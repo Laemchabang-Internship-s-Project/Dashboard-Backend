@@ -30,3 +30,4 @@ Icon?
 *.sql
 *.sqlite3
 *.db
+postgres_data/
