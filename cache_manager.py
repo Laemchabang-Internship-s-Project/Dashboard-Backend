@@ -74,7 +74,9 @@ def init_analytics_db():
                 total_opd INTEGER,
                 total_walkin INTEGER,
                 total_telemed INTEGER,
-                total_drug_delivery INTEGER
+                total_drug_delivery INTEGER,
+                total_drug_delivery_postal INTEGER,
+                total_drug_delivery_rider INTEGER
             );
         """))
         db.commit()
@@ -108,16 +110,19 @@ async def save_hospital_log(full_data: dict):
             sys = full_data.get("system", {})
             result = db.execute(
                 text("""
-                INSERT INTO hospital_logs 
-                (total_opd, total_walkin, total_telemed, total_drug_delivery)
-                VALUES (:to, :tw, :tt, :tdd)
-                RETURNING id
+                    INSERT INTO hospital_logs 
+                    (total_opd, total_walkin, total_telemed, 
+                    total_drug_delivery, total_drug_delivery_postal, total_drug_delivery_rider)
+                    VALUES (:to, :tw, :tt, :tdd, :tdd_postal, :tdd_rider)
+                    RETURNING id
                 """),
                 {
-                    "to": sys.get("total_OPD", 0),
-                    "tw": sys.get("total_walkin", 0),
-                    "tt": sys.get("hos_telemed", 0),
-                    "tdd": sys.get("total_drug_delivery", 0)
+                    "to":         sys.get("total_OPD", 0),
+                    "tw":         sys.get("total_walkin", 0),
+                    "tt":         sys.get("hos_telemed", 0),
+                    "tdd":        sys.get("total_drug_delivery", 0),
+                    "tdd_postal": sys.get("total_drug_delivery_postal", 0),
+                    "tdd_rider":  sys.get("total_drug_delivery_rider", 0),
                 }
             )
             log_id = result.fetchone()[0]
@@ -226,6 +231,8 @@ def fetch_hos_sync():
         "walk_in": 0, "appointment": 0, "referIn": 0,
         "ems": 0, "telemed": 0, "kiosk": 0, "go_home": 0,
         "drug_delivery": 0,
+        "drug_delivery_postal": 0,
+        "drug_delivery_rider": 0,
         "avg_total": 0.0,
         "avg_wait_screening": 0.0,
         "avg_wait_exam": 0.0,
@@ -268,14 +275,19 @@ def fetch_hos_sync():
                 hos_data["go_home"]      = int(hos_res[6] or 0)
 
             delivery_sql = text("""
-                SELECT COUNT(DISTINCT vn) AS total_delivery
+                SELECT 
+                    COUNT(DISTINCT CASE WHEN icode IN ('3907018', '3907508') THEN vn END) AS postal,
+                    COUNT(DISTINCT CASE WHEN icode = '3907489' THEN vn END) AS rider,
+                    COUNT(DISTINCT vn) AS total_delivery
                 FROM opitemrece
-                WHERE icode IN ('3907018', '3907508') 
+                WHERE icode IN ('3907018', '3907508', '3907489')
                   AND vstdate = CURDATE()
             """)
             delivery_res = db_hos.execute(delivery_sql).fetchone()
             if delivery_res:
-                hos_data["drug_delivery"] = int(delivery_res[0] or 0)
+                hos_data["drug_delivery"] = int(delivery_res[2] or 0)
+                hos_data["drug_delivery_postal"] = int(delivery_res[0] or 0)
+                hos_data["drug_delivery_rider"] = int(delivery_res[1] or 0)
 
             service_sql = text("""
                 SELECT
@@ -586,7 +598,9 @@ async def task_update_hos():
                     "hos_go_home":          hos_data.get("go_home", 0),
                     "total_walkin":         total_walkin_kiosk,
                     "total_OPD":            total_hos_opd,
-                    "total_drug_delivery":  hos_data["drug_delivery"]
+                    "total_drug_delivery":        hos_data["drug_delivery"],
+                    "total_drug_delivery_postal": hos_data["drug_delivery_postal"],  
+                    "total_drug_delivery_rider":  hos_data["drug_delivery_rider"],
                 },
                 "summary": {
                     "avg_wait_total":       hos_data["avg_total"],
