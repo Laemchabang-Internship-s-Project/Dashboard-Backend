@@ -133,7 +133,7 @@ async def task_update_graph():
             print(f"[Task Graph] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
         except Exception as e:
             print(f"[Task Graph] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(10800)  # 3 ชั่วโมง
 
 
 async def get_graph_data(view: str = "daily", month: str = None, year: str = None):
