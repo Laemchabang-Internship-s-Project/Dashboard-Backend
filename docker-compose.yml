@@ -42,7 +42,7 @@ services:
       redis:
         condition: service_healthy
       db-analytics:
-        condition: service_started
+        condition: service_healthy  # รอจน Postgres พร้อมรับ connection จริงๆ
 
     networks:
       - lcbh_network
@@ -76,6 +76,13 @@ services:
       - ./postgres_data:/var/lib/postgresql/data
     networks:
       - lcbh_network
+    # ตรวจสอบว่า Postgres พร้อมรับ connection จริงๆ ก่อน dashboard-api จะ start
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      interval: 5s    # ตรวจทุก 5 วิ
+      timeout: 5s     # timeout ต่อครั้ง
+      retries: 10     # ลองสูงสุด 10 ครั้ง (~50 วิ)
+      start_period: 10s  # รอ 10 วิ ก่อนเริ่มตรวจ (Postgres init ช้า)
     deploy:
       resources:
         limits:

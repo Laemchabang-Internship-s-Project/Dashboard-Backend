@@ -204,7 +204,8 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
 # Master Data
 # ==========================================================
 OPD_TOTAL_ROOMS = (
-    '010', '062', '005', '041', '042', '109', '110', '111', '001', '002'
+    '010', '062', '005', '041', '042', '109', '110', '111', '001', '002',
+    '108', '132', '069', '020', '019', '048'
 )
 
 MASTER_ROOMS = [
@@ -221,6 +222,16 @@ MASTER_ROOMS = [
     {"code": "082", "name": "คัดกรอง OPD"},
     {"code": "113", "name": "ผิวหนัง"},
     {"code": "134", "name": "อัลตราซาวด์"},
+    
+    # --- เพิ่มแผนกเด็ก (กุมารเวชกรรม) ---
+    {"code": "108", "name": "กุมารเวชกรรม (108)"},
+    {"code": "132", "name": "กุมารเวชกรรม (132)"},
+    {"code": "069", "name": "กุมารเวชกรรม (069)"},
+    {"code": "020", "name": "กุมารเวชกรรม (020)"},
+    {"code": "019", "name": "กุมารเวชกรรม (019)"},
+    
+    # --- เพิ่มคลินิกปฐมภูมิ ---
+    {"code": "048", "name": "ฝากครรภ์ปฐมภูมิ"},
 ]
 
 # ==========================================================
@@ -245,6 +256,26 @@ def fetch_hos_sync():
             "waiting_drug": 0, "waiting_payment": 0,
         },
         "dep_062": {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        },
+        "dep_109": {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        },
+        "dep_110": {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        },
+        "dep_111": {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        },
+        "dep_108": {
             "avg_total": 0.0, "avg_wait_screening": 0.0,
             "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
             "waiting_drug": 0, "waiting_payment": 0,
@@ -315,12 +346,44 @@ def fetch_hos_sync():
                     ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
                     ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
                     SUM(CASE WHEN o.main_dep = '062' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN o.main_dep = '062' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN o.main_dep = '062' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
+
+                    -- 109
+                    ROUND(AVG(CASE WHEN o.main_dep = '109' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '109' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '109' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '109' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '109' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '109' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
+
+                    -- 110
+                    ROUND(AVG(CASE WHEN o.main_dep = '110' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '110' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '110' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '110' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '110' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '110' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
+
+                    -- 111
+                    ROUND(AVG(CASE WHEN o.main_dep = '111' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '111' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '111' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '111' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '111' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '111' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
+
+                    -- 108
+                    ROUND(AVG(CASE WHEN o.main_dep = '108' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '108' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '108' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '108' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '108' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '108' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
 
                 FROM service_time s
                 JOIN ovst o ON s.vn = o.vn
                 WHERE s.vstdate = CURDATE()
-                  AND o.main_dep IN ('010', '062')
+                  AND o.main_dep IN ('010', '062', '109', '110', '111', '108')
                   AND s.service3  IS NOT NULL
                   AND s.service4  IS NOT NULL
                   AND s.service11 IS NOT NULL
@@ -355,6 +418,46 @@ def fetch_hos_sync():
                     "waiting_payment":    int(svc_res[17] or 0),
                 }
 
+                # 109
+                hos_data["dep_109"] = {
+                    "avg_total":          float(svc_res[18] or 0),
+                    "avg_wait_screening": float(svc_res[19] or 0),
+                    "avg_wait_exam":      float(svc_res[20] or 0),
+                    "avg_wait_drug":      float(svc_res[21] or 0),
+                    "waiting_drug":       int(svc_res[22] or 0),
+                    "waiting_payment":    int(svc_res[23] or 0),
+                }
+
+                # 110
+                hos_data["dep_110"] = {
+                    "avg_total":          float(svc_res[24] or 0),
+                    "avg_wait_screening": float(svc_res[25] or 0),
+                    "avg_wait_exam":      float(svc_res[26] or 0),
+                    "avg_wait_drug":      float(svc_res[27] or 0),
+                    "waiting_drug":       int(svc_res[28] or 0),
+                    "waiting_payment":    int(svc_res[29] or 0),
+                }
+
+                # 111
+                hos_data["dep_111"] = {
+                    "avg_total":          float(svc_res[30] or 0),
+                    "avg_wait_screening": float(svc_res[31] or 0),
+                    "avg_wait_exam":      float(svc_res[32] or 0),
+                    "avg_wait_drug":      float(svc_res[33] or 0),
+                    "waiting_drug":       int(svc_res[34] or 0),
+                    "waiting_payment":    int(svc_res[35] or 0),
+                }
+
+                # 108
+                hos_data["dep_108"] = {
+                    "avg_total":          float(svc_res[36] or 0),
+                    "avg_wait_screening": float(svc_res[37] or 0),
+                    "avg_wait_exam":      float(svc_res[38] or 0),
+                    "avg_wait_drug":      float(svc_res[39] or 0),
+                    "waiting_drug":       int(svc_res[40] or 0),
+                    "waiting_payment":    int(svc_res[41] or 0),
+                }
+
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
         
@@ -373,8 +476,8 @@ def fetch_neoq_sync():
     }
     
     dept_stats = {
-        "010": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0},
-        "062": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
+        code: {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
+        for code in ["010", "062", "109", "110", "111", "108"]
     }
 
     try:
@@ -420,7 +523,7 @@ def fetch_neoq_sync():
             
             # --- NEW: Department Specific Subqueries ---
             try:
-                for code in ["010", "062"]:
+                for code in ["010", "062", "109", "110", "111", "108"]:
                     row = db_map.get(code, [0, 0, 0, 0, 0, 0])
                     dept_stats[code]["total"] = int(row[3])
                     dept_stats[code]["waiting_screening"] = int(row[5])
@@ -479,7 +582,7 @@ def fetch_neoq_sync():
                         LEFT JOIN (
                             SELECT vn, date, MAX(time) as finish_time 
                             FROM opd_queue_call 
-                            WHERE room_code IN ('010', '062')
+                            WHERE room_code IN ('010', '062', '109', '110', '111', '108')
                             GROUP BY vn, date
                         ) sub ON c.vn = sub.vn AND c.date = sub.date
                         WHERE c.date = CURDATE()
@@ -553,6 +656,30 @@ def fetch_neoq_sync():
                         "room_name": m["name"],
                         "appointment": 0, "walk_in": 0, "total": 0, "finished": 0, "waiting": 0
                     })
+            # 2.7 BUILD DEPARTMENT CARDS SUMMARY
+            dept_groups = [
+                {"dept_name": "ศัลยกรรม", "codes": ["110"]},
+                {"dept_name": "สูติกรรม", "codes": ["109"]},
+                {"dept_name": "อายุรกรรม", "codes": ["111"]},
+                {"dept_name": "กุมารเวชกรรม", "codes": ["108", "132", "069", "020", "019"]},
+                {"dept_name": "ทันตกรรม", "codes": ["005"]},
+                {"dept_name": "ฝากครรภ์ปฐมภูมิ", "codes": ["048"]},
+            ]
+            
+            department_cards = []
+            for g in dept_groups:
+                c_total = c_waiting = c_finished = 0
+                for r in rooms:
+                    if r["room_code"] in g["codes"]:
+                        c_total += r["total"]
+                        c_waiting += r["waiting"]
+                        c_finished += r["finished"]
+                department_cards.append({
+                    "dept_name": g["dept_name"],
+                    "total": c_total,
+                    "waiting": c_waiting,
+                    "finished": c_finished
+                })
 
     except Exception as e:
         print(f"[Cache Worker] NEOQ Connection Error: {e}")
@@ -565,6 +692,7 @@ def fetch_neoq_sync():
         "waiting_screening": waiting_screening,
         "waiting_exam": waiting_exam,
         "rooms": rooms,
+        "department_cards": department_cards,
         "tech": tech,
         "dept_stats": dept_stats
     }
@@ -658,8 +786,13 @@ async def task_update_neoq():
                         "waiting_exam":      n_data["waiting_exam"]
                     },
                     "rooms": n_data["rooms"],
+                    "department_cards": n_data["department_cards"],
                     "stats_010": n_data["dept_stats"]["010"],
-                    "stats_062": n_data["dept_stats"]["062"]
+                    "stats_062": n_data["dept_stats"]["062"],
+                    "stats_109": n_data["dept_stats"]["109"],
+                    "stats_110": n_data["dept_stats"]["110"],
+                    "stats_111": n_data["dept_stats"]["111"],
+                    "stats_108": n_data["dept_stats"]["108"]
                 },
                 "technical_services": {
                     "xray":     n_data["tech"]["xray_queue"],

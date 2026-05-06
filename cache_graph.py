@@ -43,6 +43,21 @@ KEY_DEPRESSION_YOY      = "graph_depression_yoy"
 KEY_DEPRESSION_STATUS   = "graph_depression_status"
 KEY_DEPRESSION_KPI      = "graph_depression_kpi"
 
+# ==========================================================
+# Smart Scheduler
+# ==========================================================
+def _get_sleep_seconds() -> int:
+    """
+    คำนวณระยะเวลาพักก่อน refresh ครั้งถัดไป
+    - 08:00–15:59 น. (ช่วง OPD) → sleep 1 ชั่วโมง = 3,600 วินาที
+    - นอกเวลา (ก่อน 08:00 / หลัง 16:00) → sleep 3 ชั่วโมง = 10,800 วินาที
+    """
+    from datetime import datetime
+    now_hour = datetime.now().hour
+    if 8 <= now_hour < 16:
+        return 3_600    # 1 ชั่วโมง
+    return 10_800       # 3 ชั่วโมง
+
 
 # ==========================================================
 # Doctor Operations
@@ -130,10 +145,12 @@ async def task_update_graph():
             if yoy:
                 pipe.set(KEY_GRAPH_YOY,     json.dumps(yoy,     ensure_ascii=False))
             await pipe.execute()
-            print(f"[Task Graph] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
+            sleep_sec = _get_sleep_seconds()
+            schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+            print(f"[Task Graph] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days — refresh ถัดไปใน {schedule_label}")
         except Exception as e:
             print(f"[Task Graph] Loop Error: {e}")
-        await asyncio.sleep(10800)  # 3 ชั่วโมง
+        await asyncio.sleep(_get_sleep_seconds())
 
 
 async def get_graph_data(view: str = "daily", month: str = None, year: str = None):
@@ -274,10 +291,12 @@ async def task_update_dental():
             if meta:
                 pipe.set(KEY_DENTAL_META,    json.dumps(meta,    ensure_ascii=False))
             await pipe.execute()
-            print(f"[Task Dental] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
+            sleep_sec = _get_sleep_seconds()
+            schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+            print(f"[Task Dental] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days — refresh ถัดไปใน {schedule_label}")
         except Exception as e:
             print(f"[Task Dental] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 
 async def get_dental_data(view: str = "daily", month: str = None, year: str = None):
@@ -400,10 +419,12 @@ async def task_update_death():
                 pipe.set(KEY_DEATH_PLACES,  json.dumps(data.get("places", []), ensure_ascii=False))
                 pipe.set(KEY_DEATH_HOURS,   json.dumps(data.get("hours", []), ensure_ascii=False))
                 await pipe.execute()
-                print(f"[Task Death] อัปเดตสำเร็จ: {len(data['top_causes'])} causes, {len(data['monthly_trend'])} months")
+                sleep_sec = _get_sleep_seconds()
+                schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+                print(f"[Task Death] อัปเดตสำเร็จ: {len(data['top_causes'])} causes, {len(data['monthly_trend'])} months — refresh ถัดไปใน {schedule_label}")
         except Exception as e:
             print(f"[Task Death] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 async def get_death_data(view: str = "causes", month: str = None, year: str = None):
     if view == "monthly":
@@ -629,11 +650,13 @@ async def task_update_depression():
                 pipe.set(KEY_DEPRESSION_KPI,     json.dumps(summary_data.get("kpi", {}), ensure_ascii=False))
             
             await pipe.execute()
-            print(f"[Task Depression] อัปเดตสำเร็จ: Cache={len(full_trend)} days")
+            sleep_sec = _get_sleep_seconds()
+            schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+            print(f"[Task Depression] อัปเดตสำเร็จ: Cache={len(full_trend)} days — refresh ถัดไปใน {schedule_label}")
 
         except Exception as e:
             print(f"[Task Depression] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 async def get_depression_data(view: str = "daily", month: str = None, year: str = None):
     if view == "monthly":
