@@ -46,22 +46,22 @@ async def get_summary_range(
                     SUM(CASE WHEN ovstist IN ('01', '06') THEN 1 ELSE 0 END) as walk_in,
                     SUM(CASE WHEN ovstist = '05' THEN 1 ELSE 0 END) as telemed,
                     
-                    -- 1. ยอดรวมจัดส่งยา (นับจำนวนออเดอร์ทั้งหมด)
-                    (SELECT COUNT(o.vn) 
+                    -- 1. ยอดรวมจัดส่งยา (นับจำนวนคนโดยใช้ DISTINCT)
+                    (SELECT COUNT(DISTINCT o.vn) 
                      FROM opitemrece o 
                      WHERE o.vstdate BETWEEN :start AND :end 
                      AND o.icode IN ('3907489', '3907018', '3907508')
                     ) as drug_delivery,
                     
-                    -- 2. ยอดไปรษณีย์
-                    (SELECT COUNT(o.vn) 
+                    -- 2. ยอดไปรษณีย์ (นับจำนวนคนโดยใช้ DISTINCT)
+                    (SELECT COUNT(DISTINCT o.vn) 
                      FROM opitemrece o 
                      WHERE o.vstdate BETWEEN :start AND :end 
                      AND o.icode IN ('3907018', '3907508')
                     ) as drug_delivery_postal,
                     
-                    -- 3. ยอด Rider
-                    (SELECT COUNT(o.vn) 
+                    -- 3. ยอด Rider (นับจำนวนคนโดยใช้ DISTINCT)
+                    (SELECT COUNT(DISTINCT o.vn) 
                      FROM opitemrece o 
                      WHERE o.vstdate BETWEEN :start AND :end 
                      AND o.icode = '3907489'

@@ -262,9 +262,9 @@ def fetch_hos_sync():
 
             delivery_sql = text("""
                 SELECT 
-                    SUM(CASE WHEN icode IN ('3907018', '3907508') THEN 1 ELSE 0 END) AS postal,
-                    SUM(CASE WHEN icode = '3907489' THEN 1 ELSE 0 END) AS rider,
-                    COUNT(vn) AS total_delivery
+                    COUNT(DISTINCT CASE WHEN icode IN ('3907018', '3907508') THEN vn END) AS postal,
+                    COUNT(DISTINCT CASE WHEN icode = '3907489' THEN vn END) AS rider,
+                    COUNT(DISTINCT vn) AS total_delivery
                 FROM opitemrece
                 WHERE icode IN ('3907018', '3907508', '3907489')
                   AND vstdate = CURDATE()
@@ -603,9 +603,9 @@ async def task_update_hos():
                     "hos_go_home":          hos_data.get("go_home", 0),
                     "total_walkin":         total_walkin_kiosk,
                     "total_OPD":            total_hos_opd,
-                    "total_drug_delivery":        hos_data["drug_delivery"],
-                    "total_drug_delivery_postal": hos_data["drug_delivery_postal"],  
-                    "total_drug_delivery_rider":  hos_data["drug_delivery_rider"],
+                    "total_drug_delivery":        hos_data["total_drug_delivery"], 
+                    "total_drug_delivery_postal": hos_data["total_drug_delivery_postal"],  
+                    "total_drug_delivery_rider":  hos_data["total_drug_delivery_rider"],
                 },
                 "summary": {
                     "avg_wait_total":       hos_data["avg_total"],
