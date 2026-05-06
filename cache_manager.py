@@ -301,26 +301,12 @@ def fetch_hos_sync():
                     SUM(CASE WHEN s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
                     SUM(CASE WHEN s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END),
                     
-                    -- 010
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
-                    SUM(CASE WHEN o.main_dep = '010' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN o.main_dep = '010' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
-
-                    -- 062
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
-                    SUM(CASE WHEN o.main_dep = '062' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN o.main_dep = '062' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
+                    {dept_select_str}
 
                 FROM service_time s
                 JOIN ovst o ON s.vn = o.vn
                 WHERE s.vstdate = CURDATE()
-                  AND o.main_dep IN ('010', '062')
+                  AND o.main_dep IN ({tracked_depts_str})
                   AND s.service3  IS NOT NULL
                   AND s.service4  IS NOT NULL
                   AND s.service11 IS NOT NULL
@@ -347,45 +333,7 @@ def fetch_hos_sync():
                     }
                     idx += 6
 
-                # 109
-                hos_data["dep_109"] = {
-                    "avg_total":          float(svc_res[18] or 0),
-                    "avg_wait_screening": float(svc_res[19] or 0),
-                    "avg_wait_exam":      float(svc_res[20] or 0),
-                    "avg_wait_drug":      float(svc_res[21] or 0),
-                    "waiting_drug":       int(svc_res[22] or 0),
-                    "waiting_payment":    int(svc_res[23] or 0),
-                }
-
-                # 110
-                hos_data["dep_110"] = {
-                    "avg_total":          float(svc_res[24] or 0),
-                    "avg_wait_screening": float(svc_res[25] or 0),
-                    "avg_wait_exam":      float(svc_res[26] or 0),
-                    "avg_wait_drug":      float(svc_res[27] or 0),
-                    "waiting_drug":       int(svc_res[28] or 0),
-                    "waiting_payment":    int(svc_res[29] or 0),
-                }
-
-                # 111
-                hos_data["dep_111"] = {
-                    "avg_total":          float(svc_res[30] or 0),
-                    "avg_wait_screening": float(svc_res[31] or 0),
-                    "avg_wait_exam":      float(svc_res[32] or 0),
-                    "avg_wait_drug":      float(svc_res[33] or 0),
-                    "waiting_drug":       int(svc_res[34] or 0),
-                    "waiting_payment":    int(svc_res[35] or 0),
-                }
-
-                # 108
-                hos_data["dep_108"] = {
-                    "avg_total":          float(svc_res[36] or 0),
-                    "avg_wait_screening": float(svc_res[37] or 0),
-                    "avg_wait_exam":      float(svc_res[38] or 0),
-                    "avg_wait_drug":      float(svc_res[39] or 0),
-                    "waiting_drug":       int(svc_res[40] or 0),
-                    "waiting_payment":    int(svc_res[41] or 0),
-                }
+                # ลบ Hardcode 109, 110, 111, 108 ออกเพราะทำงานรวมอยู่ใน loop ด้านบนแล้ว
 
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
@@ -405,8 +353,8 @@ def fetch_neoq_sync():
     }
     
     dept_stats = {
-        "010": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0},
-        "062": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
+        code: {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
+        for code in TRACKED_DEPTS
     }
 
     try:
@@ -452,7 +400,7 @@ def fetch_neoq_sync():
             
             # --- อัปเดต Subquery วนลูปตามห้องในลิสต์ ---
             try:
-                for code in ["010", "062"]:
+                for code in TRACKED_DEPTS:
                     row = db_map.get(code, [0, 0, 0, 0, 0, 0])
                     dept_stats[code]["total"] = int(row[3])
                     dept_stats[code]["waiting_screening"] = int(row[5])
@@ -514,7 +462,7 @@ def fetch_neoq_sync():
                         LEFT JOIN (
                             SELECT vn, date, MAX(time) as finish_time 
                             FROM opd_queue_call 
-                            WHERE room_code IN ('010', '062')
+                            WHERE room_code IN ({tracked_str})
                             GROUP BY vn, date
                         ) sub ON c.vn = sub.vn AND c.date = sub.date
                         WHERE c.date = CURDATE()
