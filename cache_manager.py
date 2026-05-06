@@ -23,10 +23,8 @@ redis_client = redis.Redis(
 CHANNEL_DASHBOARD = "dashboard_events"
 KEY_DASHBOARD_CACHE = "dashboard_full_cache"
 KEY_FUEL_CACHE   = "fuel_latest"
-KEY_FUEL_HISTORY = "fuel_history"   # Redis List เก็บ 100 รายการล่าสุด
+KEY_FUEL_HISTORY = "fuel_history"   
 FUEL_HISTORY_MAX = 100
-    # latest row สำหรับ KPI cards
-
 
 # ==========================================================
 # Helper: Redis
@@ -39,10 +37,6 @@ async def get_cached_data(section: str = None):
     return data.get(section) if section else data
 
 async def patch_redis_cache(new_data: dict):
-    """
-    อัปเดตข้อมูลลง Redis แบบ Deep Update 
-    เพื่อไม่ให้ข้อมูลย่อยใน "system" ของ HOS และ NEOQ เขียนทับกันเอง
-    """
     try:
         raw = await redis_client.get(KEY_DASHBOARD_CACHE)
         full_data = json.loads(raw) if raw else {}
@@ -63,10 +57,8 @@ async def patch_redis_cache(new_data: dict):
     except Exception as e:
         print(f"[Patch Cache] Error: {e}")
 
-
 def init_analytics_db():
     with SessionAnalytics() as db:
-        # --- ต้องสร้างตารางหลักก่อน (Parent Table) ---
         db.execute(text("""
             CREATE TABLE IF NOT EXISTS hospital_logs (
                 id SERIAL PRIMARY KEY,
@@ -81,7 +73,6 @@ def init_analytics_db():
         """))
         db.commit()
         
-        # --- สร้างตารางรายแผนกตามมา (Child Table) ---
         db.execute(text("""
             CREATE TABLE IF NOT EXISTS hospital_dept_logs (
                 id SERIAL PRIMARY KEY,
@@ -106,7 +97,6 @@ def init_analytics_db():
 async def save_hospital_log(full_data: dict):
     try:
         with SessionAnalytics() as db:
-            # --- บันทึกลง Table 1 (hospital_logs) ---
             sys = full_data.get("system", {})
             result = db.execute(
                 text("""
@@ -127,12 +117,12 @@ async def save_hospital_log(full_data: dict):
             )
             log_id = result.fetchone()[0]
 
-            # --- บันทึกลง Table 2 (hospital_dept_logs) ---
             clinics = full_data.get("opd_clinics", {})
             rooms = clinics.get("rooms", [])
             summary = full_data.get("summary", {})
 
-            for code in ["010", "062"]:
+            # ใช้ TRACKED_DEPTS เพื่อวนลูปบันทึก Log รายแผนก
+            for code in TRACKED_DEPTS:
                 room = next((r for r in rooms if r["room_code"] == code), {})
                 dep_sum = summary.get(f"dep_{code}", {})
                 stats = clinics.get(f"stats_{code}", {})
@@ -168,7 +158,6 @@ async def save_hospital_log(full_data: dict):
         print(f"[Save Log] Error: {e}")
 
 async def cleanup_old_logs(days_to_keep: int = 1095): 
-    """ลบข้อมูล Log ที่เก่ากว่า 3 ปี"""
     try:
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
         with SessionAnalytics() as db:
@@ -180,20 +169,14 @@ async def cleanup_old_logs(days_to_keep: int = 1095):
             print(f"[Cleanup] สำเร็จ: ลบข้อมูลที่เก่ากว่าวันที่ {cutoff_date.date()} เรียบร้อย")
     except Exception as e:
         print(f"[Cleanup Error] : {e}")
-# ==========================================================
-# Fuel Data — Webhook-driven
-# ==========================================================
+
 async def update_fuel_cache(fuel_data: dict) -> bool:
     try:
         json_str = json.dumps(fuel_data, ensure_ascii=False)
-
         await redis_client.set(KEY_FUEL_CACHE, json_str)
-
         await redis_client.lpush(KEY_FUEL_HISTORY, json_str)
         await redis_client.ltrim(KEY_FUEL_HISTORY, 0, FUEL_HISTORY_MAX - 1)
-
         await patch_redis_cache({"car": {"fuel_latest": fuel_data}})
-
         print(f"[Fuel Webhook] อัปเดตสำเร็จ: {fuel_data}")
         return True
     except Exception as e:
@@ -203,6 +186,9 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
 # ==========================================================
 # Master Data
 # ==========================================================
+# ตัวแปรหลักสำหรับดึงข้อมูลห้องที่ต้องการคำนวณเวลาแบบ Dynamics (ไม่ต้อง hardcode แล้ว)
+TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111"]
+
 OPD_TOTAL_ROOMS = (
     '010', '062', '005', '041', '042', '109', '110', '111', '001', '002'
 )
@@ -229,7 +215,7 @@ MASTER_ROOMS = [
 ]
 
 # ==========================================================
-# Database Sync Functions (ย้าย Query มาอยู่ใน Thread)
+# Database Sync Functions
 # ==========================================================
 def fetch_hos_sync():
     hos_data = {
@@ -244,17 +230,16 @@ def fetch_hos_sync():
         "avg_wait_drug": 0.0,
         "waiting_drug": 0,
         "waiting_payment": 0,
-        "dep_010": {
-            "avg_total": 0.0, "avg_wait_screening": 0.0,
-            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
-            "waiting_drug": 0, "waiting_payment": 0,
-        },
-        "dep_062": {
-            "avg_total": 0.0, "avg_wait_screening": 0.0,
-            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
-            "waiting_drug": 0, "waiting_payment": 0,
-        },
     }
+    
+    # สร้าง Dictionary รองรับทุกห้องอัตโนมัติ
+    for dept in TRACKED_DEPTS:
+        hos_data[f"dep_{dept}"] = {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        }
+
     try:
         with SessionHOS() as db_hos:
             hos_sql = text("""
@@ -291,12 +276,26 @@ def fetch_hos_sync():
             delivery_res = db_hos.execute(delivery_sql).fetchone()
             
             if delivery_res:
-                # แนะนำให้ใช้ Key ชื่อ total_drug_delivery_... เพื่อให้ตรงกับตัวแปรในฝั่ง React ที่เราแก้ไปก่อนหน้านี้นะครับ
                 hos_data["total_drug_delivery"] = int(delivery_res[2] or 0)
                 hos_data["total_drug_delivery_postal"] = int(delivery_res[0] or 0)
                 hos_data["total_drug_delivery_rider"] = int(delivery_res[1] or 0)
 
-            service_sql = text("""
+            # --- สร้างคำสั่ง SQL ย่อยสำหรับแต่ละห้องแบบไดนามิก ---
+            dept_selects = []
+            for dept in TRACKED_DEPTS:
+                dept_selects.append(f"""
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    SUM(CASE WHEN o.main_dep = '{dept}' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep = '{dept}' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
+                """)
+            
+            dept_select_str = ",\n".join(dept_selects)
+            tracked_depts_str = ", ".join([f"'{d}'" for d in TRACKED_DEPTS])
+
+            service_sql = text(f"""
                 SELECT
                     -- Combined
                     ROUND(AVG(GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0)), 1),
@@ -305,34 +304,17 @@ def fetch_hos_sync():
                     ROUND(AVG(GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0)), 1),
                     SUM(CASE WHEN s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
                     SUM(CASE WHEN s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END),
-                    
-                    -- 010
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '010' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
-                    SUM(CASE WHEN o.main_dep = '010' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN o.main_dep = '010' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END),
-
-                    -- 062
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '062' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
-                    SUM(CASE WHEN o.main_dep = '062' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN o.main_dep = '062' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
-
+                    {dept_select_str}
                 FROM service_time s
                 JOIN ovst o ON s.vn = o.vn
                 WHERE s.vstdate = CURDATE()
-                  AND o.main_dep IN ('010', '062')
+                  AND o.main_dep IN ({tracked_depts_str})
                   AND s.service3  IS NOT NULL
                   AND s.service4  IS NOT NULL
                   AND s.service11 IS NOT NULL
             """)
             svc_res = db_hos.execute(service_sql).fetchone()
             if svc_res:
-                # Combined
                 hos_data["avg_total"]          = float(svc_res[0] or 0)
                 hos_data["avg_wait_screening"] = float(svc_res[1] or 0)
                 hos_data["avg_wait_exam"]      = float(svc_res[2] or 0)
@@ -340,25 +322,18 @@ def fetch_hos_sync():
                 hos_data["waiting_drug"]       = int(svc_res[4] or 0)
                 hos_data["waiting_payment"]    = int(svc_res[5] or 0)
                 
-                # 010
-                hos_data["dep_010"] = {
-                    "avg_total":          float(svc_res[6] or 0),
-                    "avg_wait_screening": float(svc_res[7] or 0),
-                    "avg_wait_exam":      float(svc_res[8] or 0),
-                    "avg_wait_drug":      float(svc_res[9] or 0),
-                    "waiting_drug":       int(svc_res[10] or 0),
-                    "waiting_payment":    int(svc_res[11] or 0),
-                }
-
-                # 062
-                hos_data["dep_062"] = {
-                    "avg_total":          float(svc_res[12] or 0),
-                    "avg_wait_screening": float(svc_res[13] or 0),
-                    "avg_wait_exam":      float(svc_res[14] or 0),
-                    "avg_wait_drug":      float(svc_res[15] or 0),
-                    "waiting_drug":       int(svc_res[16] or 0),
-                    "waiting_payment":    int(svc_res[17] or 0),
-                }
+                # นำข้อมูลรายห้องที่ Query ออกมาวนเก็บใน Dictionary
+                idx = 6
+                for dept in TRACKED_DEPTS:
+                    hos_data[f"dep_{dept}"] = {
+                        "avg_total":          float(svc_res[idx] or 0),
+                        "avg_wait_screening": float(svc_res[idx+1] or 0),
+                        "avg_wait_exam":      float(svc_res[idx+2] or 0),
+                        "avg_wait_drug":      float(svc_res[idx+3] or 0),
+                        "waiting_drug":       int(svc_res[idx+4] or 0),
+                        "waiting_payment":    int(svc_res[idx+5] or 0),
+                    }
+                    idx += 6
 
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
@@ -377,10 +352,8 @@ def fetch_neoq_sync():
         "finance_queue":  {"all": 0, "waiting": 0, "finished": 0},
     }
     
-    dept_stats = {
-        "010": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0},
-        "062": {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
-    }
+    # สร้างโครงสร้างข้อมูลรอรับทุกห้องที่อยู่ใน TRACKED_DEPTS
+    dept_stats = {dept: {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0} for dept in TRACKED_DEPTS}
 
     try:
         with SessionNEOQ() as db_neoq:
@@ -423,9 +396,9 @@ def fetch_neoq_sync():
                 db_map = {r[0]: r for r in res}
             except Exception: pass
             
-            # --- NEW: Department Specific Subqueries ---
+            # --- อัปเดต Subquery วนลูปตามห้องในลิสต์ ---
             try:
-                for code in ["010", "062"]:
+                for code in TRACKED_DEPTS:
                     row = db_map.get(code, [0, 0, 0, 0, 0, 0])
                     dept_stats[code]["total"] = int(row[3])
                     dept_stats[code]["waiting_screening"] = int(row[5])
@@ -456,11 +429,14 @@ def fetch_neoq_sync():
             except Exception as e:
                 print(f"[Cache Worker] Dept Stats Subquery Error: {e}")
 
-            # 2.3 CALCULATION: WAIT TIME (รายห้อง แบบอัจฉริยะ)
+            # 2.3 CALCULATION: WAIT TIME (รองรับห้องแบบไดนามิก)
             wait_map = {}
             try:
                 target_codes = tuple(r["code"] for r in MASTER_ROOMS)
-                wait_sql = text("""
+                tracked_str = ", ".join(f"'{x}'" for x in TRACKED_DEPTS)
+                tracked_str_82 = ", ".join(f"'{x}'" for x in TRACKED_DEPTS + ["082"])
+
+                wait_sql = text(f"""
                     SELECT
                         x.room_code,
                         ROUND(AVG(x.wait_minutes), 1) AS avg_wait_minutes
@@ -472,7 +448,7 @@ def fetch_neoq_sync():
                                 TIMESTAMPDIFF(
                                     MINUTE,
                                     COALESCE(
-                                        CASE WHEN c.room_code IN ('010', '062', '082') THEN NULL ELSE sub.finish_time END,
+                                        CASE WHEN c.room_code IN ({tracked_str_82}) THEN NULL ELSE sub.finish_time END,
                                         CONCAT(q.date, ' ', q.time)
                                     ),
                                     CONCAT(c.date, ' ', MIN(c.time))
@@ -484,7 +460,7 @@ def fetch_neoq_sync():
                         LEFT JOIN (
                             SELECT vn, date, MAX(time) as finish_time 
                             FROM opd_queue_call 
-                            WHERE room_code IN ('010', '062')
+                            WHERE room_code IN ({tracked_str})
                             GROUP BY vn, date
                         ) sub ON c.vn = sub.vn AND c.date = sub.date
                         WHERE c.date = CURDATE()
@@ -525,14 +501,12 @@ def fetch_neoq_sync():
                     if r: tech[dept] = {"all": int(r[0] or 0), "finished": int(r[1] or 0), "waiting": int(r[2] or 0)}
                 except Exception: pass
 
-            # 2.5 KPI Calculation
-            data_010 = db_map.get('010', [0, 0, 0, 0, 0, 0])
-            data_062 = db_map.get('062', [0, 0, 0, 0, 0, 0])
+            # 2.5 KPI Calculation (รวมยอดรอซักประวัติตามห้องที่ Track อัตโนมัติ)
+            custom_opd_total = sum(int(db_map.get(d, [0]*6)[3]) for d in TRACKED_DEPTS)
+            waiting_screening = sum(int(db_map.get(d, [0]*6)[5]) for d in TRACKED_DEPTS)
+            
             data_023 = db_map.get('023', [0, 0, 0, 0, 0, 0])
-
-            custom_opd_total  = int(data_010[3]) + int(data_062[3])
-            waiting_screening = int(data_010[5]) + int(data_062[5])
-            waiting_exam      = int(data_023[5])
+            waiting_exam = int(data_023[5])
 
             # 2.6 BUILD ROOMS LIST
             for m in MASTER_ROOMS:
@@ -575,20 +549,17 @@ def fetch_neoq_sync():
     }
 
 # ==========================================================
-# Background Workers (แยก Task อิสระ)
+# Background Workers
 # ==========================================================
 async def task_update_hos():
-    """จัดการอัปเดตข้อมูลฝั่ง HOSxP ทุก 5 วินาที"""
     print("[Task HOSxP] เริ่มทำงาน...")
     init_analytics_db()
 
     log_counter = 0
     while True:
         try:
-            # 1. ดึงข้อมูลจาก HOSxP
             hos_data = await asyncio.to_thread(fetch_hos_sync)
             
-            # 2. เตรียมข้อมูลสำหรับ Patch ลง Redis (เหมือนเดิม)
             total_walkin_kiosk = hos_data["walk_in"] + hos_data["kiosk"]
             total_hos_opd = (hos_data.get("walk_in", 0) + hos_data.get("appointment", 0) + 
                              hos_data.get("referIn", 0) + hos_data.get("ems", 0) + 
@@ -615,21 +586,21 @@ async def task_update_hos():
                     "avg_wait_examination": hos_data["avg_wait_exam"],
                     "avg_wait_drug":        hos_data["avg_wait_drug"],
                     "waiting_drug":         hos_data["waiting_drug"],
-                    "waiting_payment":      hos_data["waiting_payment"],
-                    "dep_010":              hos_data["dep_010"],
-                    "dep_062":              hos_data["dep_062"],
+                    "waiting_payment":      hos_data["waiting_payment"]
                 }
             }
-            # อัปเดต Redis ทันทีเพื่อให้ Dashboard แสดงผล Real-time
+            
+            # ยัดข้อมูล dep_XXX เข้าไปใน summary อัตโนมัติ
+            for dept in TRACKED_DEPTS:
+                patch_data["summary"][f"dep_{dept}"] = hos_data[f"dep_{dept}"]
+
             await patch_redis_cache(patch_data)
 
-            # 3. บันทึก Log ลง PostgreSQL ทุก 5 นาที (รอบที่ 60)
             if (log_counter % 60 == 0):
-                # ดึงข้อมูลล่าสุดจาก Redis (ซึ่งมีข้อมูลจากทั้ง HOSxP และ NEOQ)
                 full_data = await get_cached_data() 
                 if full_data and "opd_clinics" in full_data:
                     await save_hospital_log(full_data)
-                    await cleanup_old_logs(days_to_keep=1095) # เก็บ 3 ปี
+                    await cleanup_old_logs(days_to_keep=1095) 
                     print(f"[Log Analytics] บันทึก 2 Tables เรียบร้อย (รอบที่ {log_counter // 60})")
 
             log_counter += 1
@@ -639,9 +610,6 @@ async def task_update_hos():
             print(f"[Task HOSxP] Loop Error: {e}")
             
         await asyncio.sleep(5)
-
-
-
 
 async def task_update_neoq():
     print("[Task NEOQ] เริ่มทำงาน...")
@@ -662,9 +630,7 @@ async def task_update_neoq():
                         "waiting_screening": n_data["waiting_screening"],
                         "waiting_exam":      n_data["waiting_exam"]
                     },
-                    "rooms": n_data["rooms"],
-                    "stats_010": n_data["dept_stats"]["010"],
-                    "stats_062": n_data["dept_stats"]["062"]
+                    "rooms": n_data["rooms"]
                 },
                 "technical_services": {
                     "xray":     n_data["tech"]["xray_queue"],
@@ -673,6 +639,11 @@ async def task_update_neoq():
                     "finance":  n_data["tech"]["finance_queue"],
                 }
             }
+            
+            # ยัดข้อมูล stats_XXX เข้าไปใน opd_clinics อัตโนมัติ
+            for dept in TRACKED_DEPTS:
+                patch_data["opd_clinics"][f"stats_{dept}"] = n_data["dept_stats"][dept]
+
             await patch_redis_cache(patch_data)
         except Exception as e:
             print(f"[Task NEOQ] Loop Error: {e}")
@@ -683,10 +654,6 @@ async def task_update_neoq():
 # Main Entry Point
 # ==========================================================
 async def update_redis_cache():
-    """
-    ฟังก์ชันหลักที่รักษาชื่อเดิมไว้ เพื่อไม่ให้ไฟล์ main.py (ที่เรียกใช้คำสั่งนี้) พัง
-    จะทำหน้าที่เป็นคนแตกงานออกเป็น 2 ส่วนให้ทำงานขนานกัน
-    """
     print("[Cache Worker] เริ่มกระจายงาน (HOSxP และ NEOQ รันขนานกัน)...")
     
     asyncio.create_task(task_update_hos())
