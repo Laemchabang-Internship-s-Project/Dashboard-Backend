@@ -276,18 +276,20 @@ def fetch_hos_sync():
 
             delivery_sql = text("""
                 SELECT 
-                    COUNT(DISTINCT CASE WHEN icode IN ('3907018', '3907508') THEN vn END) AS postal,
-                    COUNT(DISTINCT CASE WHEN icode = '3907489' THEN vn END) AS rider,
-                    COUNT(DISTINCT vn) AS total_delivery
+                    SUM(CASE WHEN icode IN ('3907018', '3907508') THEN 1 ELSE 0 END) AS postal,
+                    SUM(CASE WHEN icode = '3907489' THEN 1 ELSE 0 END) AS rider,
+                    COUNT(vn) AS total_delivery
                 FROM opitemrece
                 WHERE icode IN ('3907018', '3907508', '3907489')
                   AND vstdate = CURDATE()
             """)
             delivery_res = db_hos.execute(delivery_sql).fetchone()
+            
             if delivery_res:
-                hos_data["drug_delivery"] = int(delivery_res[2] or 0)
-                hos_data["drug_delivery_postal"] = int(delivery_res[0] or 0)
-                hos_data["drug_delivery_rider"] = int(delivery_res[1] or 0)
+                # แนะนำให้ใช้ Key ชื่อ total_drug_delivery_... เพื่อให้ตรงกับตัวแปรในฝั่ง React ที่เราแก้ไปก่อนหน้านี้นะครับ
+                hos_data["total_drug_delivery"] = int(delivery_res[2] or 0)
+                hos_data["total_drug_delivery_postal"] = int(delivery_res[0] or 0)
+                hos_data["total_drug_delivery_rider"] = int(delivery_res[1] or 0)
 
             service_sql = text("""
                 SELECT
