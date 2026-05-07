@@ -42,6 +42,7 @@ redis_client = redis.Redis(
 # ==========================================================
 KEY_FINANCE_RAW_FULL = "graph_finance_raw_full"   # เก็บข้อมูลดิบรายวัน (Incremental store)
 KEY_FINANCE_BY_PTTYPE = "graph_finance_by_pttype"  # สรุปตามประเภทผู้ป่วย (ผลลัพธ์หลัก)
+KEY_FINANCE_YEARLY    = "graph_finance_yearly"     # สรุปรายปี
 KEY_FINANCE_MONTHLY   = "graph_finance_monthly"    # สรุปรายเดือน
 KEY_FINANCE_DAILY     = "graph_finance_daily"      # สรุปรายวัน (90 วันล่าสุด)
 KEY_FINANCE_KPI       = "graph_finance_kpi"        # KPI ยอดรวมวันนี้ / เดือนนี้
@@ -68,11 +69,12 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
     """
     from datetime import date, timedelta
     today = date.today()
+    START_YEAR = 2022  # ปีเริ่มต้นที่จะดึงข้อมูลย้อนหลัง (ตรงกับ YEAR_OPTIONS ใน Frontend)
 
     # --- กำหนดช่วงวันที่จะดึง ---
     if not existing_data:
-        # ครั้งแรก: ดึงย้อนหลัง 1 ปี (ตาม WHERE ใน SQL)
-        start_date_str = (today - timedelta(days=365)).strftime('%Y-%m-%d')
+        # ครั้งแรก: ดึงย้อนหลังตั้งแต่ต้นปี START_YEAR เพื่อให้ monthly filter ทุกปีมีข้อมูล
+        start_date_str = f'{START_YEAR}-01-01'
         existing_data = {}
     else:
         # รอบถัดไป: ดึงแค่ 30 วันล่าสุด เพื่อรับข้อมูลที่อาจแก้ไขย้อนหลัง
@@ -148,9 +150,9 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
     # ประมวลผล: แปลง existing_data → by_pttype, monthly, daily, kpi
     # ----------------------------------------------------------
     pttype_agg: dict = {}   # {pttype_code: {...sum fields}}
+    yearly_agg: dict = {}   # {yr: {...sum fields}}
     monthly_agg: dict = {}  # {(yr, mo): {...sum fields}}
     daily_list: list = []
-    cutoff_90d = today - timedelta(days=90)
     kpi = {
         "today_total":  0.0,
         "today_cash":   0.0,
@@ -160,6 +162,7 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
     }
     current_month = today.strftime('%Y-%m')
     current_year  = today.strftime('%Y')
+    date_365_days_ago = (today - timedelta(days=365)).strftime('%Y-%m-%d')
 
     for d_str in sorted(existing_data.keys()):
         day_data = existing_data[d_str]
@@ -177,16 +180,15 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
         day_patients  = sum(v["total_patients"] for v in day_data.values())
         day_visits    = sum(v["total_visits"]   for v in day_data.values())
 
-        if d_str >= cutoff_90d.strftime('%Y-%m-%d'):
-            daily_list.append({
-                "date":           d_str,
-                "total_amount":   day_total,
-                "cash_amount":    day_cash,
-                "debtor_amount":  day_debtor,
-                "unpaid_amount":  day_unpaid,
-                "total_patients": day_patients,
-                "total_visits":   day_visits,
-            })
+        daily_list.append({
+            "date":           d_str,
+            "total_amount":   day_total,
+            "cash_amount":    day_cash,
+            "debtor_amount":  day_debtor,
+            "unpaid_amount":  day_unpaid,
+            "total_patients": day_patients,
+            "total_visits":   day_visits,
+        })
 
         # --- KPI ---
         if d_str == str(today):
@@ -198,25 +200,26 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
         if d_str.startswith(current_year):
             kpi["year_total"]  += day_total
 
-        # --- รวม by_pttype (ทุกวัน) ---
-        for ptcode, vals in day_data.items():
-            if ptcode not in pttype_agg:
-                pttype_agg[ptcode] = {
-                    "pttype_code":    ptcode,
-                    "pttype_name":    vals["pttype_name"],
-                    "total_patients": 0,
-                    "total_visits":   0,
-                    "cash_amount":    0.0,
-                    "debtor_amount":  0.0,
-                    "unpaid_amount":  0.0,
-                    "total_amount":   0.0,
-                }
-            pttype_agg[ptcode]["total_patients"] += vals["total_patients"]
-            pttype_agg[ptcode]["total_visits"]   += vals["total_visits"]
-            pttype_agg[ptcode]["cash_amount"]    += vals["cash_amount"]
-            pttype_agg[ptcode]["debtor_amount"]  += vals["debtor_amount"]
-            pttype_agg[ptcode]["unpaid_amount"]  += vals["unpaid_amount"]
-            pttype_agg[ptcode]["total_amount"]   += vals["total_amount"]
+        # --- รวม by_pttype (เฉพาะ 365 วันล่าสุด) ---
+        if d_str >= date_365_days_ago:
+            for ptcode, vals in day_data.items():
+                if ptcode not in pttype_agg:
+                    pttype_agg[ptcode] = {
+                        "pttype_code":    ptcode,
+                        "pttype_name":    vals["pttype_name"],
+                        "total_patients": 0,
+                        "total_visits":   0,
+                        "cash_amount":    0.0,
+                        "debtor_amount":  0.0,
+                        "unpaid_amount":  0.0,
+                        "total_amount":   0.0,
+                    }
+                pttype_agg[ptcode]["total_patients"] += vals["total_patients"]
+                pttype_agg[ptcode]["total_visits"]   += vals["total_visits"]
+                pttype_agg[ptcode]["cash_amount"]    += vals["cash_amount"]
+                pttype_agg[ptcode]["debtor_amount"]  += vals["debtor_amount"]
+                pttype_agg[ptcode]["unpaid_amount"]  += vals["unpaid_amount"]
+                pttype_agg[ptcode]["total_amount"]   += vals["total_amount"]
 
         # --- รวม monthly ---
         key = (yr, mo)
@@ -234,11 +237,27 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
         monthly_agg[key]["unpaid_amount"]  += day_unpaid
         monthly_agg[key]["total_amount"]   += day_total
 
+        # --- รวม yearly ---
+        if yr not in yearly_agg:
+            yearly_agg[yr] = {
+                "year": yr,
+                "total_patients": 0, "total_visits": 0,
+                "cash_amount": 0.0, "debtor_amount": 0.0,
+                "unpaid_amount": 0.0, "total_amount": 0.0,
+            }
+        yearly_agg[yr]["total_patients"] += day_patients
+        yearly_agg[yr]["total_visits"]   += day_visits
+        yearly_agg[yr]["cash_amount"]    += day_cash
+        yearly_agg[yr]["debtor_amount"]  += day_debtor
+        yearly_agg[yr]["unpaid_amount"]  += day_unpaid
+        yearly_agg[yr]["total_amount"]   += day_total
+
     # แปลงเป็น list เรียงตาม pttype_code
     by_pttype_list = sorted(pttype_agg.values(), key=lambda x: x["pttype_code"])
+    yearly_list    = [v for _, v in sorted(yearly_agg.items())]
     monthly_list   = [v for _, v in sorted(monthly_agg.items())]
 
-    return by_pttype_list, monthly_list, daily_list, kpi, existing_data
+    return by_pttype_list, yearly_list, monthly_list, daily_list, kpi, existing_data
 
 
 # ==========================================================
@@ -282,7 +301,7 @@ async def task_update_finance():
             existing_data = json.loads(raw_full_str) if raw_full_str else {}
 
             # 2. ดึงข้อมูลใหม่จาก DB (run ใน thread pool ไม่บล็อก asyncio)
-            by_pttype, monthly, daily, kpi, full_data = await asyncio.to_thread(
+            by_pttype, yearly, monthly, daily, kpi, full_data = await asyncio.to_thread(
                 fetch_finance_incremental_sync, existing_data
             )
 
@@ -291,6 +310,8 @@ async def task_update_finance():
             pipe.set(KEY_FINANCE_RAW_FULL,  json.dumps(full_data,   ensure_ascii=False))
             if by_pttype:
                 pipe.set(KEY_FINANCE_BY_PTTYPE, json.dumps(by_pttype,  ensure_ascii=False))
+            if yearly:
+                pipe.set(KEY_FINANCE_YEARLY,    json.dumps(yearly,     ensure_ascii=False))
             if monthly:
                 pipe.set(KEY_FINANCE_MONTHLY,   json.dumps(monthly,    ensure_ascii=False))
             if daily:
@@ -336,7 +357,17 @@ async def get_finance_data(
     Returns:
         dict | list: ข้อมูลตาม view ที่เลือก
     """
-    if view == "monthly":
+    if view == "yearly":
+        raw = await redis_client.get(KEY_FINANCE_YEARLY)
+        if not raw:
+            return []
+        data = json.loads(raw)
+        # กรองตามปีถ้าระบุ (แม้ว่าจะเป็น yearly อยู่แล้ว แต่วางเผื่อไว้)
+        if year:
+            data = [r for r in data if r["year"] == year]
+        return data
+
+    elif view == "monthly":
         raw = await redis_client.get(KEY_FINANCE_MONTHLY)
         if not raw:
             return []
