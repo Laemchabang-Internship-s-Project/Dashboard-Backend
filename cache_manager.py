@@ -442,47 +442,68 @@ def fetch_neoq_sync():
             # ==========================================================
             # 3. UNIQUE VN -> MAIN DEPT
             # ==========================================================
+            DEPT_ROOM_GROUPS = {
+                "010": {"screening": ["010"]},
+                "062": {"screening": ["062"]},
+                "108": {"screening": ["108"]},
+                "109": {"screening": ["109"]},
+                "110": {"screening": ["110"]},
+                "111": {"screening": ["111"]},
+            }
 
             dept_vn_map = {}
 
             try:
+                screening_rooms = []
+                for info in DEPT_ROOM_GROUPS.values():
+                    screening_rooms.extend(info["screening"])
 
-                dept_sql = text("""
-                    SELECT
-                        vn,
-                        MIN(room_code) AS room_code
+                anchor_sql = text("""
+                    SELECT vn, room_code
                     FROM opd_queue
                     WHERE date = CURDATE()
                       AND room_code IN :rooms
-                    GROUP BY vn
                 """).bindparams(bindparam("rooms", expanding=True))
 
-                dept_rows = db_neoq.execute(
-                    dept_sql,
-                    {"rooms": TRACKED_DEPTS}
+                anchor_rows = db_neoq.execute(
+                    anchor_sql,
+                    {"rooms": tuple(screening_rooms)}
                 ).fetchall()
 
-                for vn, room_code in dept_rows:
-                    dept_vn_map[vn] = room_code
+                for vn, room_code in anchor_rows:
+                    for dept_code, info in DEPT_ROOM_GROUPS.items():
+                        if room_code in info["screening"]:
+                            dept_vn_map[vn] = dept_code
+                            break
 
             except Exception as e:
                 print(f"[DEPT MAP ERROR] {e}")
 
+
             # ==========================================================
             # 4. PRELOAD STATES
             # ==========================================================
+            DEPT_EXAM_ROOMS = {
+                "010": "023",
+                "062": "023",
+                "108": "069",
+                "109": "047",
+                "110": "059",
+                "111": "076",
+            }
 
             try:
-
-                exam_vn = set(
-                    r[0] for r in db_neoq.execute(text("""
+                exam_vn = set()
+                for dept_code, exam_room in DEPT_EXAM_ROOMS.items():
+                    rows = db_neoq.execute(text("""
                         SELECT DISTINCT vn
                         FROM opd_queue
                         WHERE date = CURDATE()
-                          AND room_code = '023'
+                          AND room_code = :room
                           AND status_id != '3'
-                    """)).fetchall()
-                )
+                    """), {"room": exam_room}).fetchall()
+                    for (vn,) in rows:
+                        exam_vn.add(vn)
 
                 lab_vn = set(
                     r[0] for r in db_neoq.execute(text("""
