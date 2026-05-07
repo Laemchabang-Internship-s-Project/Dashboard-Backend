@@ -208,6 +208,7 @@ MASTER_ROOMS = [
     {"code": "082", "name": "คัดกรอง OPD"},
     {"code": "113", "name": "ผิวหนัง"},
     {"code": "134", "name": "อัลตราซาวด์"},
+    {"code": "108", "name": "กุมารเวชกรรม"},
 ]
 
 # ==========================================================
@@ -342,47 +343,80 @@ def fetch_hos_sync():
 
 
 def fetch_neoq_sync():
+
     opd_total = appointment = walk_in = 0
-    custom_opd_total = waiting_screening = waiting_exam = 0
+    custom_opd_total = 0
+
     rooms = []
+
     tech = {
         "xray_queue":     {"all": 0, "waiting": 0, "finished": 0},
         "lab_queue":      {"all": 0, "waiting": 0, "finished": 0},
         "pharmacy_queue": {"all": 0, "waiting": 0, "finished": 0},
         "finance_queue":  {"all": 0, "waiting": 0, "finished": 0},
     }
-    
+
+    department_cards = []
+
     dept_stats = {
-        code: {"total": 0, "waiting_screening": 0, "waiting_exam": 0, "waiting_lab": 0, "waiting_xray": 0}
+        code: {
+            "total": 0,
+            "waiting_screening": 0,
+            "waiting_exam": 0,
+            "waiting_lab": 0,
+            "waiting_xray": 0,
+            "waiting_payment": 0,
+            "waiting_drug": 0,
+            "finished": 0,
+        }
         for code in TRACKED_DEPTS
     }
 
     try:
-        with SessionNEOQ() as db_neoq:
-            # 2.1 OPD TOTAL
+
+        with SessionNEOQ() as db_neoq, SessionHOS() as db_hos:
+
+            # ==========================================================
+            # 1. TOTAL OPD (USE VN NOT HN)
+            # ==========================================================
+
             try:
+
                 sys_sql = text("""
                     SELECT
-                        COUNT(DISTINCT hn),
-                        COUNT(DISTINCT CASE WHEN room_code = '062' THEN hn END),
-                        COUNT(DISTINCT CASE WHEN room_code != '062' THEN hn END)
+                        COUNT(DISTINCT vn),
+                        COUNT(DISTINCT CASE WHEN room_code = '062' THEN vn END),
+                        COUNT(DISTINCT CASE WHEN room_code != '062' THEN vn END)
                     FROM opd_queue
                     WHERE date = CURDATE()
                     AND room_code IN :rooms
                 """).bindparams(bindparam("rooms", expanding=True))
-                sys_res = db_neoq.execute(sys_sql, {"rooms": OPD_TOTAL_ROOMS}).fetchone()
+
+                sys_res = db_neoq.execute(
+                    sys_sql,
+                    {"rooms": OPD_TOTAL_ROOMS}
+                ).fetchone()
+
                 if sys_res:
                     opd_total   = int(sys_res[0] or 0)
                     appointment = int(sys_res[1] or 0)
                     walk_in     = int(sys_res[2] or 0)
-            except Exception: pass
 
-            # 2.2 ROOM TABLE
+            except Exception as e:
+                print(f"[OPD TOTAL ERROR] {e}")
+
+            # ==========================================================
+            # 2. ROOM TABLE
+            # ==========================================================
+
             db_map = {}
+
             try:
+
                 target_codes = tuple(r["code"] for r in MASTER_ROOMS)
+
                 opd_sql = text("""
-                    SELECT 
+                    SELECT
                         room_code,
                         SUM(CASE WHEN room_code = '062' THEN 1 ELSE 0 END),
                         SUM(CASE WHEN room_code != '062' THEN 1 ELSE 0 END),
@@ -394,181 +428,279 @@ def fetch_neoq_sync():
                     AND room_code IN :rooms
                     GROUP BY room_code
                 """).bindparams(bindparam("rooms", expanding=True))
-                res = db_neoq.execute(opd_sql, {"rooms": target_codes}).fetchall()
+
+                res = db_neoq.execute(
+                    opd_sql,
+                    {"rooms": target_codes}
+                ).fetchall()
+
                 db_map = {r[0]: r for r in res}
-            except Exception: pass
-            
-            # --- อัปเดต Subquery วนลูปตามห้องในลิสต์ ---
-            try:
-                for code in TRACKED_DEPTS:
-                    row = db_map.get(code, [0, 0, 0, 0, 0, 0])
-                    dept_stats[code]["total"] = int(row[3])
-                    dept_stats[code]["waiting_screening"] = int(row[5])
-                    
-                    exam_sql = text("""
-                        SELECT COUNT(DISTINCT q.vn) 
-                        FROM opd_queue q 
-                        WHERE q.date = CURDATE() AND q.room_code = '023' AND q.status_id != '3'
-                        AND q.vn IN (SELECT vn FROM opd_queue WHERE room_code = :code AND date = CURDATE())
-                    """)
-                    dept_stats[code]["waiting_exam"] = db_neoq.execute(exam_sql, {"code": code}).scalar() or 0
 
-                    lab_sql = text("""
-                        SELECT COUNT(DISTINCT l.vn) 
-                        FROM lab_queue l 
-                        WHERE l.date = CURDATE() AND l.status_id != '3'
-                        AND l.vn IN (SELECT vn FROM opd_queue WHERE room_code = :code AND date = CURDATE())
-                    """)
-                    dept_stats[code]["waiting_lab"] = db_neoq.execute(lab_sql, {"code": code}).scalar() or 0
-
-                    xray_sql = text("""
-                        SELECT COUNT(DISTINCT x.vn) 
-                        FROM xray_queue x 
-                        WHERE x.date = CURDATE() AND x.status_id != '3'
-                        AND x.vn IN (SELECT vn FROM opd_queue WHERE room_code = :code AND date = CURDATE())
-                    """)
-                    dept_stats[code]["waiting_xray"] = db_neoq.execute(xray_sql, {"code": code}).scalar() or 0
             except Exception as e:
-                print(f"[Cache Worker] Dept Stats Subquery Error: {e}")
+                print(f"[ROOM TABLE ERROR] {e}")
 
-            # 2.3 CALCULATION: WAIT TIME (รองรับห้องแบบไดนามิก)
-            wait_map = {}
+            # ==========================================================
+            # 3. UNIQUE VN -> MAIN DEPT
+            # ==========================================================
+
+            dept_vn_map = {}
+
             try:
-                target_codes = tuple(r["code"] for r in MASTER_ROOMS)
-                tracked_str = ", ".join(f"'{x}'" for x in TRACKED_DEPTS)
-                tracked_str_82 = ", ".join(f"'{x}'" for x in TRACKED_DEPTS + ["082"])
 
-                wait_sql = text(f"""
+                dept_sql = text("""
                     SELECT
-                        x.room_code,
-                        ROUND(AVG(x.wait_minutes), 1) AS avg_wait_minutes
-                    FROM (
-                        SELECT
-                            c.vn,
-                            c.room_code,
-                            GREATEST(
-                                TIMESTAMPDIFF(
-                                    MINUTE,
-                                    COALESCE(
-                                        CASE WHEN c.room_code IN ({tracked_str_82}) THEN NULL ELSE sub.finish_time END,
-                                        CONCAT(q.date, ' ', q.time)
-                                    ),
-                                    CONCAT(c.date, ' ', MIN(c.time))
-                                ),
-                                0
-                            ) AS wait_minutes
-                        FROM opd_queue_call c
-                        JOIN opd_queue q ON c.vn = q.vn AND c.date = q.date
-                        LEFT JOIN (
-                            SELECT vn, date, MAX(time) as finish_time 
-                            FROM opd_queue_call 
-                            WHERE room_code IN ({tracked_str})
-                            GROUP BY vn, date
-                        ) sub ON c.vn = sub.vn AND c.date = sub.date
-                        WHERE c.date = CURDATE()
-                          AND c.room_code IN :rooms
-                        GROUP BY c.vn, c.room_code, q.date, q.time, sub.finish_time, c.date
-                    ) x
-                    WHERE x.wait_minutes < 180 
-                    GROUP BY x.room_code
+                        vn,
+                        MIN(room_code) AS room_code
+                    FROM opd_queue
+                    WHERE date = CURDATE()
+                      AND room_code IN :rooms
+                    GROUP BY vn
                 """).bindparams(bindparam("rooms", expanding=True))
-                wait_res = db_neoq.execute(wait_sql, {"rooms": target_codes}).fetchall()
-                wait_map = {r[0]: float(r[1]) for r in wait_res}
-            except Exception: pass
 
-            # 2.4 TECH SERVICES
-            for dept in ["xray_queue", "lab_queue"]:
-                try:
-                    sql = text(f"""
-                        SELECT COUNT(*),
-                               SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END),
-                               SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END)
-                        FROM {dept}
+                dept_rows = db_neoq.execute(
+                    dept_sql,
+                    {"rooms": TRACKED_DEPTS}
+                ).fetchall()
+
+                for vn, room_code in dept_rows:
+                    dept_vn_map[vn] = room_code
+
+            except Exception as e:
+                print(f"[DEPT MAP ERROR] {e}")
+
+            # ==========================================================
+            # 4. PRELOAD STATES
+            # ==========================================================
+
+            try:
+
+                exam_vn = set(
+                    r[0] for r in db_neoq.execute(text("""
+                        SELECT DISTINCT vn
+                        FROM opd_queue
                         WHERE date = CURDATE()
-                    """)
-                    r = db_neoq.execute(sql).fetchone()
-                    if r: tech[dept] = {"all": int(r[0] or 0), "waiting": int(r[1] or 0), "finished": int(r[2] or 0)}
-                except Exception: pass
+                          AND room_code = '023'
+                          AND status_id != '3'
+                    """)).fetchall()
+                )
 
-            for dept in ["pharmacy_queue", "finance_queue"]:
-                try:
-                    sql = text(f"""
-                        SELECT COUNT(*),
-                               SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
-                               SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
-                        FROM {dept}
+                lab_vn = set(
+                    r[0] for r in db_neoq.execute(text("""
+                        SELECT DISTINCT vn
+                        FROM lab_queue
                         WHERE date = CURDATE()
-                    """)
-                    r = db_neoq.execute(sql).fetchone()
-                    if r: tech[dept] = {"all": int(r[0] or 0), "finished": int(r[1] or 0), "waiting": int(r[2] or 0)}
-                except Exception: pass
+                          AND status_id != '3'
+                    """)).fetchall()
+                )
 
-            # 2.5 KPI Calculation (รวมยอดรอซักประวัติตามห้องที่ Track อัตโนมัติ)
-            custom_opd_total = sum(int(db_map.get(d, [0]*6)[3]) for d in TRACKED_DEPTS)
-            waiting_screening = sum(int(db_map.get(d, [0]*6)[5]) for d in TRACKED_DEPTS)
-            
-            data_023 = db_map.get('023', [0, 0, 0, 0, 0, 0])
-            waiting_exam = int(data_023[5])
+                xray_vn = set(
+                    r[0] for r in db_neoq.execute(text("""
+                        SELECT DISTINCT vn
+                        FROM xray_queue
+                        WHERE date = CURDATE()
+                          AND status_id != '3'
+                    """)).fetchall()
+                )
 
-            # 2.6 BUILD ROOMS LIST
+                payment_vn = set(
+                    r[0] for r in db_hos.execute(text("""
+                        SELECT DISTINCT o.vn
+                        FROM service_time s
+                        JOIN ovst o ON s.vn = o.vn
+                        WHERE o.vstdate = CURDATE()
+                          AND s.service19 IS NOT NULL
+                          AND s.service7 IS NULL
+                    """)).fetchall()
+                )
+
+                drug_vn = set(
+                    r[0] for r in db_hos.execute(text("""
+                        SELECT DISTINCT o.vn
+                        FROM service_time s
+                        JOIN ovst o ON s.vn = o.vn
+                        WHERE o.vstdate = CURDATE()
+                          AND s.service12 IS NOT NULL
+                          AND s.service6 IS NULL
+                    """)).fetchall()
+                )
+
+                finished_vn = set(
+                    r[0] for r in db_hos.execute(text("""
+                        SELECT DISTINCT vn
+                        FROM ovst
+                        WHERE vstdate = CURDATE()
+                          AND cur_dep = '999'
+                    """)).fetchall()
+                )
+
+            except Exception as e:
+                print(f"[PRELOAD STATES ERROR] {e}")
+
+            # ==========================================================
+            # 5. EXCLUSIVE STATE MACHINE
+            # ==========================================================
+
+            try:
+
+                for vn, dept_code in dept_vn_map.items():
+
+                    dept_stats[dept_code]["total"] += 1
+
+                    # PRIORITY ORDER
+                    if vn in finished_vn:
+                        dept_stats[dept_code]["finished"] += 1
+
+                    elif vn in drug_vn:
+                        dept_stats[dept_code]["waiting_drug"] += 1
+
+                    elif vn in payment_vn:
+                        dept_stats[dept_code]["waiting_payment"] += 1
+
+                    elif vn in xray_vn:
+                        dept_stats[dept_code]["waiting_xray"] += 1
+
+                    elif vn in lab_vn:
+                        dept_stats[dept_code]["waiting_lab"] += 1
+
+                    elif vn in exam_vn:
+                        dept_stats[dept_code]["waiting_exam"] += 1
+
+                    else:
+                        dept_stats[dept_code]["waiting_screening"] += 1
+
+            except Exception as e:
+                print(f"[STATE MACHINE ERROR] {e}")
+
+            # ==========================================================
+            # 6. KPI TOTALS
+            # ==========================================================
+
+            custom_opd_total = len(dept_vn_map)
+
+            waiting_screening = sum(
+                d["waiting_screening"]
+                for d in dept_stats.values()
+            )
+
+            waiting_exam = sum(
+                d["waiting_exam"]
+                for d in dept_stats.values()
+            )
+
+            waiting_lab = sum(
+                d["waiting_lab"]
+                for d in dept_stats.values()
+            )
+
+            waiting_xray = sum(
+                d["waiting_xray"]
+                for d in dept_stats.values()
+            )
+
+            waiting_payment = sum(
+                d["waiting_payment"]
+                for d in dept_stats.values()
+            )
+
+            waiting_drug = sum(
+                d["waiting_drug"]
+                for d in dept_stats.values()
+            )
+
+            finished_total = sum(
+                d["finished"]
+                for d in dept_stats.values()
+            )
+
+            # ==========================================================
+            # 7. BUILD ROOMS
+            # ==========================================================
+
             for m in MASTER_ROOMS:
+
                 r = db_map.get(m["code"])
-                avg_wait = wait_map.get(m["code"], None)
 
                 if r:
-                    room_data = {
-                        "room_code": m["code"], 
+                    rooms.append({
+                        "room_code": m["code"],
                         "room_name": m["name"],
-                        "appointment": int(r[1]), 
+                        "appointment": int(r[1]),
                         "walk_in": int(r[2]),
-                        "total": int(r[3]), 
-                        "finished": int(r[4]), 
-                        "waiting": int(r[5])
-                    }
-                    if avg_wait is not None:
-                         room_data["avg_wait_minutes"] = avg_wait 
-                    rooms.append(room_data)
+                        "total": int(r[3]),
+                        "finished": int(r[4]),
+                        "waiting": int(r[5]),
+                    })
+
                 else:
                     rooms.append({
-                        "room_code": m["code"], 
+                        "room_code": m["code"],
                         "room_name": m["name"],
-                        "appointment": 0, "walk_in": 0, "total": 0, "finished": 0, "waiting": 0
+                        "appointment": 0,
+                        "walk_in": 0,
+                        "total": 0,
+                        "finished": 0,
+                        "waiting": 0,
                     })
-            # 2.7 BUILD DEPARTMENT CARDS SUMMARY
+
+            # ==========================================================
+            # 8. DEPARTMENT CARDS
+            # ==========================================================
+
             dept_groups = [
                 {"dept_name": "ศัลยกรรม", "codes": ["110"]},
                 {"dept_name": "สูติกรรม", "codes": ["109"]},
                 {"dept_name": "อายุรกรรม", "codes": ["111"]},
-                {"dept_name": "กุมารเวชกรรม", "codes": ["108", "132", "069", "020", "019"]},
-                {"dept_name": "ทันตกรรม", "codes": ["005"]},
-                {"dept_name": "ฝากครรภ์ปฐมภูมิ", "codes": ["048"]},
+                {"dept_name": "กุมารเวชกรรม", "codes": ["108"]},
             ]
-            
-            department_cards = []
+
             for g in dept_groups:
-                c_total = c_waiting = c_finished = 0
-                for r in rooms:
-                    if r["room_code"] in g["codes"]:
-                        c_total += r["total"]
-                        c_waiting += r["waiting"]
-                        c_finished += r["finished"]
+
+                c_total = 0
+                c_waiting = 0
+                c_finished = 0
+
+                for code in g["codes"]:
+
+                    stat = dept_stats.get(code, {})
+
+                    c_total += stat.get("total", 0)
+
+                    c_waiting += (
+                        stat.get("waiting_screening", 0)
+                        + stat.get("waiting_exam", 0)
+                        + stat.get("waiting_lab", 0)
+                        + stat.get("waiting_xray", 0)
+                        + stat.get("waiting_payment", 0)
+                        + stat.get("waiting_drug", 0)
+                    )
+
+                    c_finished += stat.get("finished", 0)
+
                 department_cards.append({
                     "dept_name": g["dept_name"],
                     "total": c_total,
                     "waiting": c_waiting,
-                    "finished": c_finished
+                    "finished": c_finished,
                 })
 
     except Exception as e:
-        print(f"[Cache Worker] NEOQ Connection Error: {e}")
+        print(f"[Cache Worker] NEOQ ERROR: {e}")
 
     return {
         "opd_total": opd_total,
         "appointment": appointment,
         "walk_in": walk_in,
+
         "custom_opd_total": custom_opd_total,
+
         "waiting_screening": waiting_screening,
         "waiting_exam": waiting_exam,
+        "waiting_lab": waiting_lab,
+        "waiting_xray": waiting_xray,
+        "waiting_payment": waiting_payment,
+        "waiting_drug": waiting_drug,
+        "finished_total": finished_total,
+
         "rooms": rooms,
         "department_cards": department_cards,
         "tech": tech,
@@ -655,7 +787,12 @@ async def task_update_neoq():
                         "walk_in":           n_data["walk_in"],
                         "custom_opd_total":  n_data["custom_opd_total"],
                         "waiting_screening": n_data["waiting_screening"],
-                        "waiting_exam":      n_data["waiting_exam"]
+                        "waiting_exam":      n_data["waiting_exam"],
+                        "waiting_lab":       n_data["waiting_lab"],
+                        "waiting_xray":      n_data["waiting_xray"],
+                        "waiting_payment":   n_data["waiting_payment"],
+                        "waiting_drug":      n_data["waiting_drug"],
+                        "finished_total":    n_data["finished_total"],
                     },
                     "rooms": n_data["rooms"],
                     "stats_010": n_data["dept_stats"]["010"],
