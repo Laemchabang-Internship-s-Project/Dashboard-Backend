@@ -281,25 +281,30 @@ def fetch_hos_sync():
             dept_selects = []
             for dept in TRACKED_DEPTS:
                 dept_selects.append(f"""
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' THEN GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service7 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service7) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service4 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service4) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service5 IS NOT NULL AND s.service11 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service5) - TIME_TO_SEC(s.service11)) / 60.0, 0) END), 1),
+                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service16 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service16) - TIME_TO_SEC(IFNULL(s.service6, s.service12))) / 60.0, 0) END), 1),
                     SUM(CASE WHEN o.main_dep = '{dept}' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
                     SUM(CASE WHEN o.main_dep = '{dept}' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
                 """)
-            
+
             dept_select_str = ",\n".join(dept_selects)
             tracked_depts_str = ", ".join([f"'{d}'" for d in TRACKED_DEPTS])
 
             service_sql = text(f"""
                 SELECT
-                    -- Combined
-                    ROUND(AVG(GREATEST((TIME_TO_SEC(IFNULL(s.service7, s.service12)) - TIME_TO_SEC(s.service3)) / 60.0, 0)), 1),
-                    ROUND(AVG(GREATEST((TIME_TO_SEC(s.service4)  - TIME_TO_SEC(s.service3))  / 60.0, 0)), 1),
-                    ROUND(AVG(GREATEST((TIME_TO_SEC(s.service11) - TIME_TO_SEC(s.service4))  / 60.0, 0)), 1),
-                    ROUND(AVG(GREATEST((TIME_TO_SEC(s.service6)  - TIME_TO_SEC(s.service12)) / 60.0, 0)), 1),
+                    -- 1. Combined: Total (7-3)
+                    ROUND(AVG(CASE WHEN s.service7 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service7) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    -- 2. Combined: Screening (4-3)
+                    ROUND(AVG(CASE WHEN s.service4 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service4) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
+                    -- 3. Combined: Exam (5-11)
+                    ROUND(AVG(CASE WHEN s.service5 IS NOT NULL AND s.service11 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service5) - TIME_TO_SEC(s.service11)) / 60.0, 0) END), 1),
+                    -- 4. Combined: Drug (16 - 6/12)
+                    ROUND(AVG(CASE WHEN s.service16 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service16) - TIME_TO_SEC(IFNULL(s.service6, s.service12))) / 60.0, 0) END), 1),
+                    -- 5. Combined: Waiting Drug Count
                     SUM(CASE WHEN s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
+                    -- 6. Combined: Waiting Payment Count
                     SUM(CASE WHEN s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END),
                     
                     {dept_select_str}
@@ -308,9 +313,7 @@ def fetch_hos_sync():
                 JOIN ovst o ON s.vn = o.vn
                 WHERE s.vstdate = CURDATE()
                   AND o.main_dep IN ({tracked_depts_str})
-                  AND s.service3  IS NOT NULL
-                  AND s.service4  IS NOT NULL
-                  AND s.service11 IS NOT NULL
+                  AND s.service3 IS NOT NULL
             """)
             svc_res = db_hos.execute(service_sql).fetchone()
             if svc_res:
