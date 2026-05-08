@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+from typing import Dict, List
 import json
 from cache_manager import redis_client
 from tasks.bed_worker import KEY_BED_CACHE
@@ -7,6 +9,46 @@ from routers.auth import get_current_user
 from rate_limiter import limiter
 
 router = APIRouter(prefix="/api/beds", tags=["Beds"])
+
+# Redis key สำหรับเก็บ config จำนวนเตียงที่ตั้งค่าแบบ Fixed
+KEY_BED_CONFIG = "beds_config_fixed_wards"
+
+# ค่า default ของ Config ทั้งหมด
+DEFAULT_CONFIG = {
+    "wards": {
+        "ผู้ป่วยอายุรกรรมหญิง": 30,
+        "ผู้ป่วยพิเศษอาคารอ่าวอุดม ชั้น 4": 12,
+        "ER Observ": 8,
+        "ODS ward": 6,
+        "หน่วยไตเทียม": 8,
+        "มินิธัญญารักษ์": 6,
+        "หอผู้ป่วยวิกฤตทารกแรกเกิด": 3,
+        "หลังคลอด": 16,
+        "ผู้ป่วยศัลยชาย": 22,
+        "ผู้ป่วยศัลยหญิง": 20,
+        "ผู้ป่วยอายุรกรรมชาย": 30,
+        "ผู้ป่วยเด็ก": 20,
+        "หอผู้ป่วย ICU": 10,
+        "ห้องคลอด": 6,
+    },
+    "allowed_wards": [
+        "หลังคลอด",
+        "ผู้ป่วยเด็ก",
+        "ผู้ป่วยศัลยชาย",
+        "ผู้ป่วยศัลยหญิง",
+        "ผู้ป่วยอายุรกรรมชาย",
+        "ผู้ป่วยอายุรกรรมหญิง",
+        "ผู้ป่วยพิเศษอาคารอ่าวอุดม ชั้น 4",
+        "มินิธัญญารักษ์"
+    ],
+    "total_beds": 150
+}
+
+class BedConfigRequest(BaseModel):
+    wards: Dict[str, int] = Field(..., description="ชื่อ ward → จำนวนเตียงทั้งหมด")
+    allowed_wards: List[str] = Field(default=[], description="รายชื่อ ward ที่ใช้นับยอดรวม")
+    total_beds: int = Field(default=150, description="ยอดรวมเตียงทั้งหมด")
+
 
 @router.get("/summary", dependencies=[Depends(get_api_key)])
 @limiter.limit("30/minute")
@@ -27,3 +69,88 @@ async def get_bed_summary(
     except Exception as e:
         print(f"[Bed Summary] Error: {e}")
         raise HTTPException(status_code=500, detail="ไม่สามารถดึงข้อมูลสรุปเตียงได้")
+
+@router.get("/config", dependencies=[Depends(get_api_key)])
+@limiter.limit("30/minute")
+async def get_bed_config(
+    request: Request,
+    _user: dict = Depends(get_current_user)
+):
+    """
+    ดึงค่า config จำนวนเตียง (Fixed Wards) ปัจจุบัน
+    ถ้ายังไม่มีการตั้งค่า จะคืนค่า default
+    """
+    try:
+        raw = await redis_client.get(KEY_BED_CONFIG)
+        if raw:
+            parsed = json.loads(raw)
+            # รองรับกรณีที่ Redis เก็บแค่ Dictionary ของ wards อย่างเดียว (โค้ดเก่า)
+            if "wards" not in parsed:
+                config = {
+                    "wards": parsed,
+                    "allowed_wards": DEFAULT_CONFIG["allowed_wards"],
+                    "total_beds": DEFAULT_CONFIG["total_beds"]
+                }
+            else:
+                config = parsed
+        else:
+            config = DEFAULT_CONFIG
+
+        return {"status": "success", "data": config}
+
+    except Exception as e:
+        print(f"[Bed Config GET] Error: {e}")
+        raise HTTPException(status_code=500, detail="ไม่สามารถดึง config เตียงได้")
+
+
+@router.post("/config", dependencies=[Depends(get_api_key)])
+@limiter.limit("10/minute")
+async def update_bed_config(
+    request: Request,
+    body: BedConfigRequest,
+    _user: dict = Depends(get_current_user)
+):
+    """
+    อัปเดตค่า config จำนวนเตียง (Fixed Wards)
+    รับ dict ชื่อ ward → จำนวนเตียงทั้งหมด
+    ค่าจะถูกเก็บลง Redis และมีผลทันที (Frontend จะดึงค่าใหม่รอบถัดไป)
+    """
+    try:
+        # Validate ว่าจำนวนเตียงต้องไม่ติดลบ
+        for ward_name, bed_count in body.wards.items():
+            if bed_count < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"จำนวนเตียงของ '{ward_name}' ต้องไม่ติดลบ"
+                )
+            if bed_count > 999:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"จำนวนเตียงของ '{ward_name}' เกินขีดจำกัด (สูงสุด 999)"
+                )
+
+        # สร้าง Object ใหม่เพื่อบันทึก
+        new_config = {
+            "wards": body.wards,
+            "allowed_wards": body.allowed_wards,
+            "total_beds": body.total_beds
+        }
+
+        # บันทึกลง Redis (ไม่มี expiry — ถาวรจนกว่าจะแก้ใหม่)
+        await redis_client.set(
+            KEY_BED_CONFIG,
+            json.dumps(new_config, ensure_ascii=False)
+        )
+
+        print(f"[Bed Config] อัปเดตแล้ว")
+        return {
+            "status": "success",
+            "message": "บันทึก config เตียงสำเร็จ",
+            "data": new_config
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Bed Config POST] Error: {e}")
+        raise HTTPException(status_code=500, detail="ไม่สามารถบันทึก config เตียงได้")
