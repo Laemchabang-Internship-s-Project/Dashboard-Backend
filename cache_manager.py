@@ -235,7 +235,7 @@ def fetch_hos_sync():
             "avg_total": 0.0, "avg_wait_screening": 0.0,
             "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
             "waiting_drug": 0, "waiting_payment": 0,
-        },
+        }
     
     try:
         with SessionHOS() as db_hos:
