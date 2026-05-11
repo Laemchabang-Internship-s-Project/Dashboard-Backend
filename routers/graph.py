@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query, Depends
 from typing import Optional
-from cache_graph import get_graph_data, get_dental_data, get_death_data, get_depression_data
+from cache_graph import get_graph_data, get_dental_data, get_death_data, get_depression_data, get_daily_operations_drilldown
 from utils.security import get_api_key
 
 router = APIRouter(prefix="/api/graph", tags=["Graph Data"])
@@ -25,6 +25,16 @@ async def get_doctor_operations_graph(
     """
     data = await get_graph_data(view=view.strip(), month=month, year=year, doctor_name=doctor_name)
     return {"status": "success", "view": view.strip(), "data": data}
+
+@router.get("/doctor-operations/daily-drilldown", dependencies=[Depends(get_api_key)])
+async def get_doctor_operations_daily_drilldown(
+    date_str: str = Query(..., description="วันที่ต้องการดูลึก เช่น '2026-04-01'"),
+):
+    """
+    ดึงข้อมูล 10 อันดับหัตถการสำหรับวันใดวันหนึ่ง
+    """
+    data = await get_daily_operations_drilldown(date_str)
+    return {"status": "success", "date": date_str, "data": data}
 
 @router.post("/trigger-cache-update")
 async def trigger_cache_update():

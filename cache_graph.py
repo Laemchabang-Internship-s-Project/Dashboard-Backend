@@ -318,6 +318,29 @@ async def get_graph_data(view: str = "daily", month: str = None, year: str = Non
             data = [r for r in data if r["op_date"].startswith(month)]
         return data
 
+def get_daily_operations_drilldown_sync(date_str: str):
+    try:
+        with SessionHOS() as db:
+            sql = text("""
+                SELECT 
+                    COALESCE(e.name, 'ไม่ระบุ') AS operation_name,
+                    COUNT(do.doctor_operation_id) AS total_count
+                FROM doctor_operation do
+                LEFT JOIN er_oper_code e ON do.er_oper_code = e.er_oper_code
+                WHERE DATE(do.begin_date_time) = :date_str
+                  AND e.name IS NOT NULL
+                GROUP BY operation_name
+                ORDER BY total_count DESC;
+            """)
+            res = db.execute(sql, {"date_str": date_str}).fetchall()
+            return [{"name": r[0], "total_count": int(r[1])} for r in res]
+    except Exception as e:
+        print(f"Error in daily drilldown: {e}")
+        return []
+
+async def get_daily_operations_drilldown(date_str: str):
+    return await asyncio.to_thread(get_daily_operations_drilldown_sync, date_str)
+
 
 # ==========================================================
 # Dental
