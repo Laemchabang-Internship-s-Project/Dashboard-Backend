@@ -18,7 +18,9 @@ def get_public_view(full_data: dict):
             "total_OPD": s.get("total_OPD", "-"),
             "total_walkin": s.get("total_walkin", "-"),
             "hos_telemed": s.get("hos_telemed", "-"),
-            "total_drug_delivery": s.get("total_drug_delivery", "-")
+            "total_drug_delivery": s.get("total_drug_delivery", "-"),
+            "total_drug_delivery_postal": s.get("total_drug_delivery_postal", "-"),
+            "total_drug_delivery_rider": s.get("total_drug_delivery_rider", "-")
         },
         "status": "public_access"
     }

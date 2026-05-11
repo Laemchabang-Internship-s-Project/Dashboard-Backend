@@ -32,6 +32,8 @@ from cache_manager import (
 from tasks.bed_worker import task_update_beds
 from routers import bed as bed_router
 from routers import fuel
+from routers import finance as finance_router
+from cache_finance import task_update_finance
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
 
@@ -55,6 +57,7 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     task = asyncio.create_task(update_redis_cache())
     bed_task = asyncio.create_task(task_update_beds())
+    finance_task = asyncio.create_task(task_update_finance())
     # --- Database Initialization ---
     from database_analytics import engine as analytics_engine, BaseAnalytics
     import models_analytics
@@ -72,6 +75,7 @@ async def lifespan(app: FastAPI):
     # --- Shutdown ---
     task.cancel()
     bed_task.cancel()
+    finance_task.cancel()
     print("[Main] Cache Worker Task หยุดทำงานแล้ว")
 
 
@@ -212,6 +216,8 @@ app.include_router(auth_router.router)
 # Graph Router
 app.include_router(graph_router.router)
 app.include_router(bed_router.router)
+# Finance Router
+app.include_router(finance_router.router)
 
 # ==========================================================
 # System Endpoints

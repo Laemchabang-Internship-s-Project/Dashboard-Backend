@@ -21,6 +21,10 @@ KEY_GRAPH_RAW_FULL= "graph_doctor_raw_full"
 KEY_GRAPH_DAILY   = "graph_doctor_daily"
 KEY_GRAPH_MONTHLY = "graph_doctor_monthly"
 KEY_GRAPH_YOY     = "graph_doctor_yoy"
+KEY_GRAPH_STATS_OPER = "graph_doctor_stats_oper"
+KEY_GRAPH_STATS_DOC = "graph_doctor_stats_doc"
+KEY_GRAPH_STATS_DEPT = "graph_doctor_stats_dept"
+KEY_GRAPH_STATS_DRILLDOWN = "graph_doctor_stats_drilldown"
 
 # Dental — แยก 3 ระดับ
 KEY_DENTAL_RAW_FULL= "graph_dental_raw_full"
@@ -42,6 +46,21 @@ KEY_DEPRESSION_MONTHLY  = "graph_depression_monthly"
 KEY_DEPRESSION_YOY      = "graph_depression_yoy"
 KEY_DEPRESSION_STATUS   = "graph_depression_status"
 KEY_DEPRESSION_KPI      = "graph_depression_kpi"
+
+# ==========================================================
+# Smart Scheduler
+# ==========================================================
+def _get_sleep_seconds() -> int:
+    """
+    คำนวณระยะเวลาพักก่อน refresh ครั้งถัดไป
+    - 08:00–15:59 น. (ช่วง OPD) → sleep 1 ชั่วโมง = 3,600 วินาที
+    - นอกเวลา (ก่อน 08:00 / หลัง 16:00) → sleep 3 ชั่วโมง = 10,800 วินาที
+    """
+    from datetime import datetime
+    now_hour = datetime.now().hour
+    if 8 <= now_hour < 16:
+        return 3_600    # 1 ชั่วโมง
+    return 10_800       # 3 ชั่วโมง
 
 
 # ==========================================================
@@ -112,6 +131,86 @@ def fetch_graph_incremental_sync(existing_data):
     return daily, monthly, yoy_map, existing_data
 
 
+def fetch_doctor_operations_stats_sync():
+    data = {
+        "operations": [],
+        "doctors": [],
+        "departments": [],
+        "drilldown": []
+    }
+    try:
+        with SessionHOS() as db_hos:
+            # 1. Operations
+            sql_ops = text("""
+                SELECT 
+                    COALESCE(e.name, 'ไม่ระบุ') AS operation_name,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%Y'), 'Unknown') AS year,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%m'), 'Unknown') AS month,
+                    COUNT(do.doctor_operation_id) AS total_count
+                FROM doctor_operation do
+                LEFT JOIN er_oper_code e ON do.er_oper_code = e.er_oper_code
+                WHERE do.begin_date_time IS NOT NULL AND do.begin_date_time >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
+                  AND e.name IS NOT NULL
+                GROUP BY operation_name, year, month;
+            """)
+            rows_ops = db_hos.execute(sql_ops).fetchall()
+            data["operations"] = [{"operation_name": r[0], "year": r[1], "month": r[2], "total_count": int(r[3])} for r in rows_ops]
+
+            # 2. Doctors
+            sql_docs = text("""
+                SELECT 
+                    COALESCE(d.name, 'ไม่ระบุ') AS doctor_name,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%Y'), 'Unknown') AS year,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%m'), 'Unknown') AS month,
+                    COUNT(do.doctor_operation_id) AS total_count
+                FROM doctor_operation do
+                LEFT JOIN doctor d ON do.doctor = d.code
+                WHERE do.begin_date_time IS NOT NULL AND do.begin_date_time >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
+                  AND d.name IS NOT NULL
+                GROUP BY doctor_name, year, month;
+            """)
+            rows_docs = db_hos.execute(sql_docs).fetchall()
+            data["doctors"] = [{"doctor_name": r[0], "year": r[1], "month": r[2], "total_count": int(r[3])} for r in rows_docs]
+
+            # 3. Departments
+            sql_depts = text("""
+                SELECT 
+                    COALESCE(k.department, 'ไม่ระบุ') AS department_name,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%Y'), 'Unknown') AS year,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%m'), 'Unknown') AS month,
+                    COUNT(do.doctor_operation_id) AS total_count
+                FROM doctor_operation do
+                LEFT JOIN kskdepartment k ON do.depcode = k.depcode
+                WHERE do.begin_date_time IS NOT NULL AND do.begin_date_time >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
+                  AND k.department IS NOT NULL
+                GROUP BY department_name, year, month;
+            """)
+            rows_depts = db_hos.execute(sql_depts).fetchall()
+            data["departments"] = [{"department_name": r[0], "year": r[1], "month": r[2], "total_count": int(r[3])} for r in rows_depts]
+
+            # 4. Drilldown (Doctor -> Operations)
+            sql_drilldown = text("""
+                SELECT 
+                    COALESCE(d.name, 'ไม่ระบุ') AS doctor_name,
+                    COALESCE(e.name, 'ไม่ระบุ') AS operation_name,
+                    COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%Y'), 'Unknown') AS year,
+                    COUNT(do.doctor_operation_id) AS total_count
+                FROM doctor_operation do
+                LEFT JOIN doctor d ON do.doctor = d.code
+                LEFT JOIN er_oper_code e ON do.er_oper_code = e.er_oper_code
+                WHERE do.begin_date_time IS NOT NULL AND do.begin_date_time >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
+                  AND d.name IS NOT NULL AND e.name IS NOT NULL
+                GROUP BY doctor_name, operation_name, year;
+            """)
+            rows_drilldown = db_hos.execute(sql_drilldown).fetchall()
+            data["drilldown"] = [{"doctor_name": r[0], "operation_name": r[1], "year": r[2], "total_count": int(r[3])} for r in rows_drilldown]
+
+            return data
+    except Exception as e:
+        print(f"[Cache Worker] Doctor Operations Stats Error: {e}")
+        return data
+
+
 async def task_update_graph():
     print("[Task Graph] เริ่มทำงาน (Incremental)...")
     while True:
@@ -121,6 +220,8 @@ async def task_update_graph():
             
             daily, monthly, yoy, full_data = await asyncio.to_thread(fetch_graph_incremental_sync, existing_data)
             
+            stats_data = await asyncio.to_thread(fetch_doctor_operations_stats_sync)
+            
             pipe = redis_client.pipeline()
             pipe.set(KEY_GRAPH_RAW_FULL, json.dumps(full_data, ensure_ascii=False))
             if daily:
@@ -129,14 +230,21 @@ async def task_update_graph():
                 pipe.set(KEY_GRAPH_MONTHLY, json.dumps(monthly, ensure_ascii=False))
             if yoy:
                 pipe.set(KEY_GRAPH_YOY,     json.dumps(yoy,     ensure_ascii=False))
+            if stats_data:
+                pipe.set(KEY_GRAPH_STATS_OPER, json.dumps(stats_data.get("operations", []), ensure_ascii=False))
+                pipe.set(KEY_GRAPH_STATS_DOC,  json.dumps(stats_data.get("doctors", []), ensure_ascii=False))
+                pipe.set(KEY_GRAPH_STATS_DEPT, json.dumps(stats_data.get("departments", []), ensure_ascii=False))
+                pipe.set(KEY_GRAPH_STATS_DRILLDOWN, json.dumps(stats_data.get("drilldown", []), ensure_ascii=False))
             await pipe.execute()
-            print(f"[Task Graph] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
+            sleep_sec = _get_sleep_seconds()
+            schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+            print(f"[Task Graph] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days — refresh ถัดไปใน {schedule_label}")
         except Exception as e:
             print(f"[Task Graph] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 
-async def get_graph_data(view: str = "daily", month: str = None, year: str = None):
+async def get_graph_data(view: str = "daily", month: str = None, year: str = None, doctor_name: str = None):
     if view == "monthly":
         raw = await redis_client.get(KEY_GRAPH_MONTHLY)
         if not raw:
@@ -148,6 +256,59 @@ async def get_graph_data(view: str = "daily", month: str = None, year: str = Non
     elif view == "yoy":
         raw = await redis_client.get(KEY_GRAPH_YOY)
         return json.loads(raw) if raw else {}
+    elif view == "drilldown":
+        raw = await redis_client.get(KEY_GRAPH_STATS_DRILLDOWN)
+        if not raw:
+            return []
+        data = json.loads(raw)
+        
+        if not year and not month:
+            from datetime import datetime
+            current_year = str(datetime.now().year)
+            available_years = sorted(set(r.get("year", "") for r in data if r.get("year") not in ("", "Unknown") and r.get("year") <= current_year), reverse=True)
+            if available_years:
+                year = available_years[0]
+                
+        if year:
+            data = [r for r in data if r.get("year") == year]
+            
+        if doctor_name:
+            data = [r for r in data if r.get("doctor_name") == doctor_name]
+            
+        agg = {}
+        for r in data:
+            name = r.get("operation_name")
+            if name:
+                agg[name] = agg.get(name, 0) + r["total_count"]
+                
+        return sorted([{"name": k, "total_count": v} for k, v in agg.items()], key=lambda x: x["total_count"], reverse=True)[:10]
+    elif view in ["operations", "doctors", "departments"]:
+        key = KEY_GRAPH_STATS_OPER if view == "operations" else KEY_GRAPH_STATS_DOC if view == "doctors" else KEY_GRAPH_STATS_DEPT
+        raw = await redis_client.get(key)
+        if not raw:
+            return []
+        data = json.loads(raw)
+        
+        if not year and not month:
+            from datetime import datetime
+            current_year = str(datetime.now().year)
+            available_years = sorted(set(r.get("year", "") for r in data if r.get("year") not in ("", "Unknown") and r.get("year") <= current_year), reverse=True)
+            if available_years:
+                year = available_years[0]
+                
+        if year:
+            data = [r for r in data if r.get("year") == year]
+        if month:
+            parts = month.split("-")
+            if len(parts) == 2:
+                data = [r for r in data if r.get("year") == parts[0] and r.get("month") == parts[1]]
+                
+        agg = {}
+        for r in data:
+            name = r.get("operation_name") or r.get("doctor_name") or r.get("department_name")
+            agg[name] = agg.get(name, 0) + r["total_count"]
+            
+        return sorted([{"name": k, "total_count": v} for k, v in agg.items()], key=lambda x: x["total_count"], reverse=True)[:10]
     else:
         raw = await redis_client.get(KEY_GRAPH_DAILY)
         if not raw:
@@ -156,6 +317,29 @@ async def get_graph_data(view: str = "daily", month: str = None, year: str = Non
         if month:
             data = [r for r in data if r["op_date"].startswith(month)]
         return data
+
+def get_daily_operations_drilldown_sync(date_str: str):
+    try:
+        with SessionHOS() as db:
+            sql = text("""
+                SELECT 
+                    COALESCE(e.name, 'ไม่ระบุ') AS operation_name,
+                    COUNT(do.doctor_operation_id) AS total_count
+                FROM doctor_operation do
+                LEFT JOIN er_oper_code e ON do.er_oper_code = e.er_oper_code
+                WHERE DATE(do.begin_date_time) = :date_str
+                  AND e.name IS NOT NULL
+                GROUP BY operation_name
+                ORDER BY total_count DESC;
+            """)
+            res = db.execute(sql, {"date_str": date_str}).fetchall()
+            return [{"name": r[0], "total_count": int(r[1])} for r in res]
+    except Exception as e:
+        print(f"Error in daily drilldown: {e}")
+        return []
+
+async def get_daily_operations_drilldown(date_str: str):
+    return await asyncio.to_thread(get_daily_operations_drilldown_sync, date_str)
 
 
 # ==========================================================
@@ -274,10 +458,12 @@ async def task_update_dental():
             if meta:
                 pipe.set(KEY_DENTAL_META,    json.dumps(meta,    ensure_ascii=False))
             await pipe.execute()
-            print(f"[Task Dental] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days")
+            sleep_sec = _get_sleep_seconds()
+            schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+            print(f"[Task Dental] อัปเดตสำเร็จ: DB load ~30 days, Cache={len(full_data)} days — refresh ถัดไปใน {schedule_label}")
         except Exception as e:
             print(f"[Task Dental] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 
 async def get_dental_data(view: str = "daily", month: str = None, year: str = None):
@@ -400,10 +586,12 @@ async def task_update_death():
                 pipe.set(KEY_DEATH_PLACES,  json.dumps(data.get("places", []), ensure_ascii=False))
                 pipe.set(KEY_DEATH_HOURS,   json.dumps(data.get("hours", []), ensure_ascii=False))
                 await pipe.execute()
-                print(f"[Task Death] อัปเดตสำเร็จ: {len(data['top_causes'])} causes, {len(data['monthly_trend'])} months")
+                sleep_sec = _get_sleep_seconds()
+                schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+                print(f"[Task Death] อัปเดตสำเร็จ: {len(data['top_causes'])} causes, {len(data['monthly_trend'])} months — refresh ถัดไปใน {schedule_label}")
         except Exception as e:
             print(f"[Task Death] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 async def get_death_data(view: str = "causes", month: str = None, year: str = None):
     if view == "monthly":
@@ -629,11 +817,13 @@ async def task_update_depression():
                 pipe.set(KEY_DEPRESSION_KPI,     json.dumps(summary_data.get("kpi", {}), ensure_ascii=False))
             
             await pipe.execute()
-            print(f"[Task Depression] อัปเดตสำเร็จ: Cache={len(full_trend)} days")
+            sleep_sec = _get_sleep_seconds()
+            schedule_label = "1 ชม." if sleep_sec == 3_600 else "3 ชม."
+            print(f"[Task Depression] อัปเดตสำเร็จ: Cache={len(full_trend)} days — refresh ถัดไปใน {schedule_label}")
 
         except Exception as e:
             print(f"[Task Depression] Loop Error: {e}")
-        await asyncio.sleep(604800)  # 7 วัน
+        await asyncio.sleep(_get_sleep_seconds())
 
 async def get_depression_data(view: str = "daily", month: str = None, year: str = None):
     if view == "monthly":
