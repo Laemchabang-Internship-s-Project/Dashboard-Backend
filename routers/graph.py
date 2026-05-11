@@ -36,7 +36,7 @@ async def get_doctor_operations_daily_drilldown(
     data = await get_daily_operations_drilldown(date_str)
     return {"status": "success", "date": date_str, "data": data}
 
-@router.post("/trigger-cache-update")
+@router.post("/trigger-cache-update",dependencies=[Depends(get_api_key)])
 async def trigger_cache_update():
     from cache_graph import fetch_doctor_operations_stats_sync, redis_client, KEY_GRAPH_STATS_OPER, KEY_GRAPH_STATS_DOC, KEY_GRAPH_STATS_DEPT, KEY_GRAPH_STATS_DRILLDOWN
     import json
