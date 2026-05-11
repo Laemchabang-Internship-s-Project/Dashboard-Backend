@@ -187,7 +187,7 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
 # Master Data
 # ==========================================================
 # ตัวแปรหลักสำหรับดึงข้อมูลห้องที่ต้องการคำนวณเวลาแบบ Dynamics (ไม่ต้อง hardcode แล้ว)
-TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111"]
+TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063"]
 
 OPD_TOTAL_ROOMS = (
     '010', '062', '005', '041', '042', '109', '110', '111', '001', '002',
@@ -265,7 +265,7 @@ def fetch_hos_sync():
                 SELECT 
                     COUNT(DISTINCT CASE WHEN icode IN ('3907018', '3907508') THEN vn END) AS postal,
                     COUNT(DISTINCT CASE WHEN icode = '3907489' THEN vn END) AS rider,
-                    COUNT(DISTINCT vn) AS total_delivery
+                    COUNT(DISTINCT vn) AS total_delivery 
                 FROM opitemrece
                 WHERE icode IN ('3907018', '3907508', '3907489')
                   AND vstdate = CURDATE()
@@ -452,6 +452,12 @@ def fetch_neoq_sync():
                 "109": {"screening": ["109"]},
                 "110": {"screening": ["110"]},
                 "111": {"screening": ["111"]},
+                "011": {"screening": ["011"]},
+                "075": {"screening": ["075"]},
+                "044": {"screening": ["044"]},
+                "033": {"screening": ["033"]},
+                "072": {"screening": ["072"]},
+                "063": {"screening": ["063"]},
             }
 
             dept_vn_map = {}
