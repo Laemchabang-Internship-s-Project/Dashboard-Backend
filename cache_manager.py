@@ -450,6 +450,34 @@ def fetch_neoq_sync():
 
             except Exception as e:
                 print(f"[ROOM TABLE ERROR] {e}")
+            
+            tech_queries = {
+                "lab_queue":      "lab_queue",
+                "xray_queue":     "xray_queue",
+                "pharmacy_queue": "pharmacy_queue",
+                "finance_queue":  "finance_queue"
+            }
+
+            for tech_key, table_name in tech_queries.items():
+                try:
+                    # Query ตรงไปยังแต่ละตาราง (lab_queue, xray_queue, etc.)
+                    q_res = db_neoq.execute(text(f"""
+                        SELECT 
+                            COUNT(*), 
+                            SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END), 
+                            SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END) 
+                        FROM {table_name} 
+                        WHERE date = CURDATE()
+                    """)).fetchone()
+
+                    if q_res:
+                        tech[tech_key] = {
+                            "all":      int(q_res[0] or 0),
+                            "finished": int(q_res[1] or 0),
+                            "waiting":  int(q_res[2] or 0)
+                        }
+                except Exception as e:
+                    print(f"[{table_name.upper()} QUERY ERROR] {e}")
 
             # ==========================================================
             # 3. UNIQUE VN -> MAIN DEPT
