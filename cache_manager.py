@@ -442,9 +442,7 @@ def fetch_hos_sync():
             hos_data["finished_vn"] = finished_vn
             hos_data["drug_vn"]     = drug_vn
             hos_data["payment_vn"]  = payment_vn
-            hos_data["exam_vn"]     = exam_vn
-            
-            hos_data["dept_vn_map"] = dept_vn_map
+            hos_data["exam_vn"]     = exam_vn    
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
     
@@ -612,7 +610,7 @@ async def task_update_hos():
     "012": "waiting_xray",
 
     "074": "waiting_exam",      # หน่วยไตเทียม -> รอตรวจ/รับบริการ
-    
+
     "901": "waiting_screening", # เวชระเบียน -> รอซักประวัติ
     "902": "waiting_screening", # ซักประวัติ -> รอซักประวัติ
     "903": "waiting_exam",      # ห้องตรวจแพทย์ -> รอตรวจ
