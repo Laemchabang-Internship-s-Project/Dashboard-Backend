@@ -187,7 +187,9 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
 # Master Data
 # ==========================================================
 # ตัวแปรหลักสำหรับดึงข้อมูลห้องที่ต้องการคำนวณเวลาแบบ Dynamics (ไม่ต้อง hardcode แล้ว)
-TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063","005","042","041"]
+TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063","005","042","041","023","066","077"
+    ,"074", "901", "902", "903", "904", "905"
+]
 
 OPD_TOTAL_ROOMS = (
     '010', '062', '005', '041', '042', '109', '110', '111', '001', '002',
@@ -218,6 +220,12 @@ MASTER_ROOMS = [
     {"code": "005", "name": "คลินิกทันตกรรม"},
     {"code": "042", "name": "กายภาพ"},
     {"code": "041", "name": "แพทย์แผนไทย"},
+    {"code": "074", "name": "หน่วยไตเทียม"},
+    {"code": "901", "name": "เวชระเบียน (บ่อวิน)"},
+    {"code": "902", "name": "ซักประวัติ (บ่อวิน)"},
+    {"code": "903", "name": "ห้องตรวจแพทย์ (บ่อวิน)"},
+    {"code": "904", "name": "ห้องจ่ายยา (บ่อวิน)"},
+    {"code": "905", "name": "ห้องทันตกรรม (บ่อวิน)"},
 ]
 
 
@@ -366,18 +374,22 @@ def fetch_hos_sync():
             # --------------------------------------------------
 
             # 4a. VN → main_dep mapping (source of truth)
+            # --- ส่วนที่ 4a ใน fetch_hos_sync ที่ควรจะเป็น ---
             tracked_depts_tuple = tuple(TRACKED_DEPTS)
-            vn_dept_rows = db_hos.execute(
+            vn_all_rows = db_hos.execute(
                 text("""
-                    SELECT vn, main_dep
+                    SELECT vn, main_dep, cur_dep
                     FROM ovst
                     WHERE vstdate = CURDATE()
-                      AND main_dep IN :depts
+                      AND (main_dep IN :depts OR cur_dep IN :depts) -- ดึงทั้งคนไข้เดิมและคนที่ถูกส่งมา
                 """).bindparams(bindparam("depts", expanding=True)),
                 {"depts": tracked_depts_tuple}
             ).fetchall()
 
-            dept_vn_map = {vn: dept for vn, dept in vn_dept_rows}
+            # สร้างแผนที่เก็บทั้ง main และ cur
+            # vn_info_map = { 'vn': (main_dep, cur_dep) }
+            vn_info_map = {r[0]: (r[1], r[2]) for r in vn_all_rows}
+            hos_data["vn_info_map"] = vn_info_map
 
             # 4b. VN states from service_time + ovst
             finished_vn = set(r[0] for r in db_hos.execute(text("""
@@ -589,8 +601,8 @@ async def task_update_hos():
     "999": "finished",
     "016": "waiting_payment",
     "030": "waiting_drug",
-    "023": "waiting_exam",
-    "014": "waiting_exam",
+    "023": "waiting_exam",    # จุดรอตรวจ -> รอพบแพทย์
+    "014": "waiting_exam",    # ห้องหลังพบแพทย์ -> รอพบแพทย์
     "047": "waiting_exam",
     "059": "waiting_exam",
     "069": "waiting_exam",
@@ -598,65 +610,78 @@ async def task_update_hos():
     "046": "waiting_exam",
     "007": "waiting_lab",
     "012": "waiting_xray",
-    }
+
+    "074": "waiting_exam",      # หน่วยไตเทียม -> รอตรวจ/รับบริการ
+    
+    "901": "waiting_screening", # เวชระเบียน -> รอซักประวัติ
+    "902": "waiting_screening", # ซักประวัติ -> รอซักประวัติ
+    "903": "waiting_exam",      # ห้องตรวจแพทย์ -> รอตรวจ
+    "905": "waiting_exam",      # ห้องทันตกรรม -> รอตรวจ
+    "904": "waiting_drug",      # ห้องจ่ายยา -> รอรับยา
+    
+    # เพิ่มรหัสใหม่ที่ตรวจเจอว่าหลุดคิว
+    "066": "waiting_screening", # ศูนย์รับส่งต่อ -> รอซักประวัติ
+    "077": "waiting_screening", # งานให้คำปรึกษา -> รอซักประวัติ
+}
 
     DEPT_USE_CUR_DEP = {"042", "041", "005", "075", "044"}
     while True:
         try:
-            # รัน HOS และ NEOQ พร้อมกัน เพื่อเอา lab_vn/xray_vn มา merge
             hos_data, neoq_data = await asyncio.gather(
                 asyncio.to_thread(fetch_hos_sync),
                 asyncio.to_thread(fetch_neoq_sync),
             )
 
-            # ดึง VN sets ทั้งหมด
+            # ดึง VN sets และสถิติที่จำเป็น (ลบตัวแปรที่ไม่ได้ใช้/ซ้ำซ้อนออก)
             finished_vn = hos_data["finished_vn"]
             drug_vn     = hos_data["drug_vn"]
             payment_vn  = hos_data["payment_vn"]
             exam_vn     = hos_data["exam_vn"]
-            cur_dep_map = hos_data["cur_dep_map"] 
             lab_vn      = neoq_data["lab_vn"]
             xray_vn     = neoq_data["xray_vn"]
-            dept_vn_map = hos_data["dept_vn_map"]
+            vn_info_map = hos_data["vn_info_map"] # ใช้ตัวนี้เป็นหลัก
             dept_stats  = hos_data["dept_stats"]
 
-            # reset
+            # Reset stats ก่อนเริ่มนับใหม่
             for s in dept_stats.values():
                 for key in ["total","waiting_screening","waiting_exam","waiting_lab",
                             "waiting_xray","waiting_payment","waiting_drug","finished"]:
                     s[key] = 0
 
-            # state machine รอบเดียว
-            for vn, dept_code in dept_vn_map.items():
-                if dept_code not in dept_stats:
-                    continue
-                s = dept_stats[dept_code]
-                s["total"] += 1
+            # State Machine: Track ตามตำแหน่งปัจจุบัน (cur_dept)
+            for vn, (main_dept, cur_dept) in vn_info_map.items():
+                target_dept = cur_dept if cur_dept in TRACKED_DEPTS else main_dept
 
-                if dept_code in DEPT_USE_CUR_DEP:
-                    cur = cur_dep_map.get(vn)
-                    state = CUR_DEP_STATE.get(cur, "waiting_screening")
-                    s[state] += 1
+                if target_dept not in dept_stats:
+                    continue
+                
+                s = dept_stats[target_dept]
+                s["total"] += 1 
+
+                # เช็คสถานะตามลำดับ Priority
+                if vn in finished_vn:
+                    s["finished"] += 1
+                elif vn in drug_vn:
+                    s["waiting_drug"] += 1
+                elif vn in payment_vn:
+                    s["waiting_payment"] += 1
+                elif vn in xray_vn:
+                    s["waiting_xray"] += 1
+                elif vn in lab_vn:
+                    s["waiting_lab"] += 1
+                elif vn in exam_vn:
+                    s["waiting_exam"] += 1
                 else:
-                    if vn in finished_vn:
-                        s["finished"] += 1
-                    elif vn in drug_vn:
-                        s["waiting_drug"] += 1
-                    elif vn in payment_vn:
-                        s["waiting_payment"] += 1
-                    elif vn in xray_vn:
-                        s["waiting_xray"] += 1
-                    elif vn in lab_vn:
-                        s["waiting_lab"] += 1
-                    elif vn in exam_vn:
-                        s["waiting_exam"] += 1
-                    else:
-                        cur = cur_dep_map.get(vn)
-                        state = CUR_DEP_STATE.get(cur, "waiting_screening")
-                        s[state] += 1
+                    # Fallback: ใช้สถานะตาม cur_dep
+                    state = CUR_DEP_STATE.get(cur_dept, "waiting_screening")
+                    s[state] += 1
+
+            # สรุปยอดรวมส่ง Dashboard
+            hos_data["custom_opd_total"]  = len(vn_info_map)
+            # ... ส่วนการคำนวณ sum(d["..."]) ด้านล่างเหมือนเดิม ...
 
             # recalculate totals
-            hos_data["custom_opd_total"]  = len(dept_vn_map)
+            #hos_data["custom_opd_total"]  = len(dept_vn_map)
             hos_data["waiting_screening"] = sum(d["waiting_screening"] for d in dept_stats.values())
             hos_data["waiting_exam"]      = sum(d["waiting_exam"]      for d in dept_stats.values())
             hos_data["waiting_lab"]       = sum(d["waiting_lab"]       for d in dept_stats.values())
