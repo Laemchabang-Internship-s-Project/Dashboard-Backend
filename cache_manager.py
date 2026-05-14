@@ -220,8 +220,10 @@ MASTER_ROOMS = [
     {"code": "041", "name": "แพทย์แผนไทย"},
 ]
 
+
 # ==========================================================
-# Database Sync Functions
+# fetch_hos_sync() — Clinical source of truth
+# State machine ทั้งหมดย้ายมาอยู่ที่นี่
 # ==========================================================
 def fetch_hos_sync():
     hos_data = {
@@ -236,142 +238,19 @@ def fetch_hos_sync():
         "avg_wait_drug": 0.0,
         "waiting_drug": 0,
         "waiting_payment": 0,
+        # KPI totals (คำนวณจาก state machine)
+        "custom_opd_total": 0,
+        "waiting_screening": 0,
+        "waiting_exam": 0,
+        "waiting_lab": 0,
+        "waiting_xray": 0,
+        "finished_total": 0,
+        "dept_stats": {},
     }
-    
-    # สร้าง Dictionary รองรับทุกห้องอัตโนมัติ
+
+    # init dept_stats ทุก dept
     for dept in TRACKED_DEPTS:
-        hos_data[f"dep_{dept}"] = {
-            "avg_total": 0.0, "avg_wait_screening": 0.0,
-            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
-            "waiting_drug": 0, "waiting_payment": 0,
-        }
-    
-    try:
-        with SessionHOS() as db_hos:
-            hos_sql = text("""
-                SELECT 
-                    SUM(CASE WHEN ovstist = '01' THEN 1 ELSE 0 END) as walk_in_count,
-                    SUM(CASE WHEN ovstist = '02' THEN 1 ELSE 0 END) as appointment_count,
-                    SUM(CASE WHEN ovstist = '03' THEN 1 ELSE 0 END) as referIn_count,
-                    SUM(CASE WHEN ovstist = '04' THEN 1 ELSE 0 END) as ems_count,
-                    SUM(CASE WHEN ovstist = '05' THEN 1 ELSE 0 END) as telemed_count,
-                    SUM(CASE WHEN ovstist = '06' THEN 1 ELSE 0 END) as kiosk_count,
-                    SUM(CASE WHEN cur_dep = '999' THEN 1 ELSE 0 END) as go_home_count
-                FROM ovst 
-                WHERE vstdate = CURDATE()
-            """)
-            hos_res = db_hos.execute(hos_sql).fetchone()
-            if hos_res:
-                hos_data["walk_in"]      = int(hos_res[0] or 0)
-                hos_data["appointment"]  = int(hos_res[1] or 0)
-                hos_data["referIn"]      = int(hos_res[2] or 0)
-                hos_data["ems"]          = int(hos_res[3] or 0)
-                hos_data["telemed"]      = int(hos_res[4] or 0)
-                hos_data["kiosk"]        = int(hos_res[5] or 0)
-                hos_data["go_home"]      = int(hos_res[6] or 0)
-
-            delivery_sql = text("""
-                SELECT 
-                    COUNT(DISTINCT CASE WHEN icode IN ('3907018', '3907508') THEN vn END) AS postal,
-                    COUNT(DISTINCT CASE WHEN icode = '3907489' THEN vn END) AS rider,
-                    COUNT(DISTINCT vn) AS total_delivery 
-                FROM opitemrece
-                WHERE icode IN ('3907018', '3907508', '3907489')
-                  AND vstdate = CURDATE()
-            """)
-            delivery_res = db_hos.execute(delivery_sql).fetchone()
-            
-            if delivery_res:
-                hos_data["total_drug_delivery"] = int(delivery_res[2] or 0)
-                hos_data["total_drug_delivery_postal"] = int(delivery_res[0] or 0)
-                hos_data["total_drug_delivery_rider"] = int(delivery_res[1] or 0)
-
-            # --- สร้างคำสั่ง SQL ย่อยสำหรับแต่ละห้องแบบไดนามิก ---
-            dept_selects = []
-            for dept in TRACKED_DEPTS:
-                dept_selects.append(f"""
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service7 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service7) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service4 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service4) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service5 IS NOT NULL AND s.service11 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service5) - TIME_TO_SEC(s.service11)) / 60.0, 0) END), 1),
-                    ROUND(AVG(CASE WHEN o.main_dep = '{dept}' AND s.service16 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service16) - TIME_TO_SEC(IFNULL(s.service6, s.service12))) / 60.0, 0) END), 1),
-                    SUM(CASE WHEN o.main_dep = '{dept}' AND s.service12 IS NOT NULL AND s.service6 IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN o.main_dep = '{dept}' AND s.service19 IS NOT NULL AND s.service7 IS NULL THEN 1 ELSE 0 END)
-                """)
-
-            dept_select_str = ",\n".join(dept_selects)
-            tracked_depts_str = ", ".join([f"'{d}'" for d in TRACKED_DEPTS])
-
-            service_sql = text(f"""
-                SELECT
-                    -- 1. Combined: Total (7-3)
-                    ROUND(AVG(CASE WHEN s.service7 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service7) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    -- 2. Combined: Screening (4-3)
-                    ROUND(AVG(CASE WHEN s.service4 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service4) - TIME_TO_SEC(s.service3)) / 60.0, 0) END), 1),
-                    -- 3. Combined: Exam (5-11)
-                    ROUND(AVG(CASE WHEN s.service5 IS NOT NULL AND s.service11 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service5) - TIME_TO_SEC(s.service11)) / 60.0, 0) END), 1),
-                    -- 4. Combined: Drug (16 - 6/12)
-                    ROUND(AVG(CASE WHEN s.service16 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service16) - TIME_TO_SEC(IFNULL(s.service6, s.service12))) / 60.0, 0) END), 1),
-                    -- 5. Combined: Waiting Drug Count
-                    SUM(CASE WHEN s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
-                    -- 6. Combined: Waiting Payment Count
-                    SUM(CASE WHEN s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END),
-                    
-                    {dept_select_str}
-
-                FROM service_time s
-                JOIN ovst o ON s.vn = o.vn
-                WHERE s.vstdate = CURDATE()
-                  AND o.main_dep IN ({tracked_depts_str})
-                  AND s.service3 IS NOT NULL
-            """)
-            svc_res = db_hos.execute(service_sql).fetchone()
-            if svc_res:
-                hos_data["avg_total"]          = float(svc_res[0] or 0)
-                hos_data["avg_wait_screening"] = float(svc_res[1] or 0)
-                hos_data["avg_wait_exam"]      = float(svc_res[2] or 0)
-                hos_data["avg_wait_drug"]      = float(svc_res[3] or 0)
-                hos_data["waiting_drug"]       = int(svc_res[4] or 0)
-                hos_data["waiting_payment"]    = int(svc_res[5] or 0)
-                
-                # นำข้อมูลรายห้องที่ Query ออกมาวนเก็บใน Dictionary
-                idx = 6
-                for dept in TRACKED_DEPTS:
-                    hos_data[f"dep_{dept}"] = {
-                        "avg_total":          float(svc_res[idx] or 0),
-                        "avg_wait_screening": float(svc_res[idx+1] or 0),
-                        "avg_wait_exam":      float(svc_res[idx+2] or 0),
-                        "avg_wait_drug":      float(svc_res[idx+3] or 0),
-                        "waiting_drug":       int(svc_res[idx+4] or 0),
-                        "waiting_payment":    int(svc_res[idx+5] or 0),
-                    }
-                    idx += 6
-
-                # ลบ Hardcode 109, 110, 111, 108 ออกเพราะทำงานรวมอยู่ใน loop ด้านบนแล้ว
-
-    except Exception as e:
-        print(f"[Cache Worker] HOSxP Error: {e}")
-        
-    return hos_data
-
-
-def fetch_neoq_sync():
-
-    opd_total = appointment = walk_in = 0
-    custom_opd_total = 0
-
-    rooms = []
-
-    tech = {
-        "xray_queue":     {"all": 0, "waiting": 0, "finished": 0},
-        "lab_queue":      {"all": 0, "waiting": 0, "finished": 0},
-        "pharmacy_queue": {"all": 0, "waiting": 0, "finished": 0},
-        "finance_queue":  {"all": 0, "waiting": 0, "finished": 0},
-    }
-
-    department_cards = []
-
-    dept_stats = {
-        code: {
+        hos_data["dept_stats"][dept] = {
             "total": 0,
             "waiting_screening": 0,
             "waiting_exam": 0,
@@ -381,377 +260,307 @@ def fetch_neoq_sync():
             "waiting_drug": 0,
             "finished": 0,
         }
-        for code in TRACKED_DEPTS
-    }
+        hos_data[f"dep_{dept}"] = {
+            "avg_total": 0.0, "avg_wait_screening": 0.0,
+            "avg_wait_exam": 0.0, "avg_wait_drug": 0.0,
+            "waiting_drug": 0, "waiting_payment": 0,
+        }
 
     try:
+        with SessionHOS() as db_hos:
 
-        with SessionNEOQ() as db_neoq, SessionHOS() as db_hos:
+            # --------------------------------------------------
+            # 1. Visit type counts
+            # --------------------------------------------------
+            hos_sql = text("""
+                SELECT
+                    SUM(CASE WHEN ovstist = '01' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN ovstist = '02' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN ovstist = '03' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN ovstist = '04' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN ovstist = '05' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN ovstist = '06' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN cur_dep = '999' THEN 1 ELSE 0 END)
+                FROM ovst
+                WHERE vstdate = CURDATE()
+            """)
+            r = db_hos.execute(hos_sql).fetchone()
+            if r:
+                hos_data["walk_in"]     = int(r[0] or 0)
+                hos_data["appointment"] = int(r[1] or 0)
+                hos_data["referIn"]     = int(r[2] or 0)
+                hos_data["ems"]         = int(r[3] or 0)
+                hos_data["telemed"]     = int(r[4] or 0)
+                hos_data["kiosk"]       = int(r[5] or 0)
+                hos_data["go_home"]     = int(r[6] or 0)
 
-            # ==========================================================
-            # 1. TOTAL OPD (USE VN NOT HN)
-            # ==========================================================
+            # --------------------------------------------------
+            # 2. Drug delivery counts
+            # --------------------------------------------------
+            delivery_res = db_hos.execute(text("""
+                SELECT
+                    COUNT(DISTINCT CASE WHEN icode IN ('3907018','3907508') THEN vn END),
+                    COUNT(DISTINCT CASE WHEN icode = '3907489' THEN vn END),
+                    COUNT(DISTINCT vn)
+                FROM opitemrece
+                WHERE icode IN ('3907018','3907508','3907489')
+                  AND vstdate = CURDATE()
+            """)).fetchone()
+            if delivery_res:
+                hos_data["drug_delivery"]        = int(delivery_res[2] or 0)
+                hos_data["drug_delivery_postal"] = int(delivery_res[0] or 0)
+                hos_data["drug_delivery_rider"]  = int(delivery_res[1] or 0)
 
+            # --------------------------------------------------
+            # 3. Wait time averages per dept (dynamic)
+            # --------------------------------------------------
+            dept_selects = []
+            for dept in TRACKED_DEPTS:
+                dept_selects.append(f"""
+                    ROUND(AVG(CASE WHEN o.main_dep='{dept}' AND s.service7  IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service7) -TIME_TO_SEC(s.service3))/60.0,0) END),1),
+                    ROUND(AVG(CASE WHEN o.main_dep='{dept}' AND s.service4  IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service4) -TIME_TO_SEC(s.service3))/60.0,0) END),1),
+                    ROUND(AVG(CASE WHEN o.main_dep='{dept}' AND s.service5  IS NOT NULL AND s.service11 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service5)-TIME_TO_SEC(s.service11))/60.0,0) END),1),
+                    ROUND(AVG(CASE WHEN o.main_dep='{dept}' AND s.service16 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service16)-TIME_TO_SEC(IFNULL(s.service6,s.service12)))/60.0,0) END),1),
+                    SUM(CASE WHEN o.main_dep='{dept}' AND s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN o.main_dep='{dept}' AND s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END)
+                """)
+
+            tracked_depts_str = ", ".join([f"'{d}'" for d in TRACKED_DEPTS])
+            svc_res = db_hos.execute(text(f"""
+                SELECT
+                    ROUND(AVG(CASE WHEN s.service7  IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service7) -TIME_TO_SEC(s.service3))/60.0,0) END),1),
+                    ROUND(AVG(CASE WHEN s.service4  IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service4) -TIME_TO_SEC(s.service3))/60.0,0) END),1),
+                    ROUND(AVG(CASE WHEN s.service5  IS NOT NULL AND s.service11 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service5)-TIME_TO_SEC(s.service11))/60.0,0) END),1),
+                    ROUND(AVG(CASE WHEN s.service16 IS NOT NULL THEN GREATEST((TIME_TO_SEC(s.service16)-TIME_TO_SEC(IFNULL(s.service6,s.service12)))/60.0,0) END),1),
+                    SUM(CASE WHEN s.service12 IS NOT NULL AND s.service6  IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN s.service19 IS NOT NULL AND s.service7  IS NULL THEN 1 ELSE 0 END),
+                    {", ".join(dept_selects)}
+                FROM service_time s
+                JOIN ovst o ON s.vn = o.vn
+                WHERE s.vstdate = CURDATE()
+                  AND o.main_dep IN ({tracked_depts_str})
+                  AND s.service3 IS NOT NULL
+            """)).fetchone()
+
+            if svc_res:
+                hos_data["avg_total"]          = float(svc_res[0] or 0)
+                hos_data["avg_wait_screening"] = float(svc_res[1] or 0)
+                hos_data["avg_wait_exam"]      = float(svc_res[2] or 0)
+                hos_data["avg_wait_drug"]      = float(svc_res[3] or 0)
+                hos_data["waiting_drug"]       = int(svc_res[4] or 0)
+                hos_data["waiting_payment"]    = int(svc_res[5] or 0)
+                idx = 6
+                for dept in TRACKED_DEPTS:
+                    hos_data[f"dep_{dept}"] = {
+                        "avg_total":          float(svc_res[idx]   or 0),
+                        "avg_wait_screening": float(svc_res[idx+1] or 0),
+                        "avg_wait_exam":      float(svc_res[idx+2] or 0),
+                        "avg_wait_drug":      float(svc_res[idx+3] or 0),
+                        "waiting_drug":       int(svc_res[idx+4]   or 0),
+                        "waiting_payment":    int(svc_res[idx+5]   or 0),
+                    }
+                    idx += 6
+
+            # --------------------------------------------------
+            # 4. STATE MACHINE — preload VN sets from HOS
+            # --------------------------------------------------
+
+            # 4a. VN → main_dep mapping (source of truth)
+            tracked_depts_tuple = tuple(TRACKED_DEPTS)
+            vn_dept_rows = db_hos.execute(
+                text("""
+                    SELECT vn, main_dep
+                    FROM ovst
+                    WHERE vstdate = CURDATE()
+                      AND main_dep IN :depts
+                """).bindparams(bindparam("depts", expanding=True)),
+                {"depts": tracked_depts_tuple}
+            ).fetchall()
+
+            dept_vn_map = {vn: dept for vn, dept in vn_dept_rows}
+
+            # 4b. VN states from service_time + ovst
+            finished_vn = set(r[0] for r in db_hos.execute(text("""
+                SELECT DISTINCT vn FROM ovst
+                WHERE vstdate = CURDATE() AND cur_dep = '999'
+            """)).fetchall())
+
+            drug_vn = set(r[0] for r in db_hos.execute(text("""
+                SELECT DISTINCT o.vn
+                FROM service_time s JOIN ovst o ON s.vn = o.vn
+                WHERE o.vstdate = CURDATE()
+                  AND s.service12 IS NOT NULL AND s.service6 IS NULL
+            """)).fetchall())
+
+            payment_vn = set(r[0] for r in db_hos.execute(text("""
+                SELECT DISTINCT o.vn
+                FROM service_time s JOIN ovst o ON s.vn = o.vn
+                WHERE o.vstdate = CURDATE()
+                  AND s.service19 IS NOT NULL AND s.service7 IS NULL
+            """)).fetchall())
+            
+            cur_dep_rows = db_hos.execute(
+                text("""
+                    SELECT vn, cur_dep
+                    FROM ovst
+                    WHERE vstdate = CURDATE()
+                      AND main_dep IN :depts
+                """).bindparams(bindparam("depts", expanding=True)),
+                {"depts": tracked_depts_tuple}
+            ).fetchall()
+
+            cur_dep_map = {vn: cur_dep for vn, cur_dep in cur_dep_rows}
+            hos_data["cur_dep_map"] = cur_dep_map
+
+            # 4c. Lab / Xray ยังต้องดึงจาก NEOQ — ส่งกลับเป็น set ว่างไว้ก่อน
+            # (จะถูก merge เข้ามาจาก fetch_neoq_sync ทีหลัง)
+            # ดูส่วน merge ใน task_update_hos()
+            lab_vn   = set()
+            xray_vn  = set()
+
+            # 4d. Exam: service4 stamp แล้วยังไม่ service5 (กำลังรอตรวจ)
+            exam_vn = set(r[0] for r in db_hos.execute(text("""
+                SELECT DISTINCT o.vn
+                FROM service_time s JOIN ovst o ON s.vn = o.vn
+                WHERE o.vstdate = CURDATE()
+                  AND s.service4 IS NOT NULL
+                  AND s.service5 IS NULL
+            """)).fetchall())
+
+            hos_data["finished_vn"] = finished_vn
+            hos_data["drug_vn"]     = drug_vn
+            hos_data["payment_vn"]  = payment_vn
+            hos_data["exam_vn"]     = exam_vn
+            
+            hos_data["dept_vn_map"] = dept_vn_map
+    except Exception as e:
+        print(f"[Cache Worker] HOSxP Error: {e}")
+    
+    return hos_data
+
+
+# ==========================================================
+# fetch_neoq_sync() — Room occupancy + tech queues เท่านั้น
+# ตัด state machine ออกทั้งหมด
+# ==========================================================
+def fetch_neoq_sync():
+    rooms = []
+    tech = {
+        "xray_queue":     {"all": 0, "waiting": 0, "finished": 0},
+        "lab_queue":      {"all": 0, "waiting": 0, "finished": 0},
+        "pharmacy_queue": {"all": 0, "waiting": 0, "finished": 0},
+        "finance_queue":  {"all": 0, "waiting": 0, "finished": 0},
+    }
+    department_cards = []
+    # lab/xray VN sets — ส่งกลับไปให้ HOS merge
+    lab_vn  = set()
+    xray_vn = set()
+
+    try:
+        with SessionNEOQ() as db_neoq:
+
+            # --------------------------------------------------
+            # 1. OPD total (header counts)
+            # --------------------------------------------------
+            opd_total = appointment = walk_in = 0
             try:
-
-                sys_sql = text("""
-                    SELECT
-                        COUNT(DISTINCT vn),
-                        COUNT(DISTINCT CASE WHEN room_code = '062' THEN vn END),
-                        COUNT(DISTINCT CASE WHEN room_code != '062' THEN vn END)
-                    FROM opd_queue
-                    WHERE date = CURDATE()
-                    AND room_code IN :rooms
-                """).bindparams(bindparam("rooms", expanding=True))
-
                 sys_res = db_neoq.execute(
-                    sys_sql,
+                    text("""
+                        SELECT
+                            COUNT(DISTINCT vn),
+                            COUNT(DISTINCT CASE WHEN room_code = '062' THEN vn END),
+                            COUNT(DISTINCT CASE WHEN room_code != '062' THEN vn END)
+                        FROM opd_queue
+                        WHERE date = CURDATE()
+                          AND room_code IN :rooms
+                    """).bindparams(bindparam("rooms", expanding=True)),
                     {"rooms": OPD_TOTAL_ROOMS}
                 ).fetchone()
-
                 if sys_res:
                     opd_total   = int(sys_res[0] or 0)
                     appointment = int(sys_res[1] or 0)
                     walk_in     = int(sys_res[2] or 0)
-
             except Exception as e:
                 print(f"[OPD TOTAL ERROR] {e}")
 
-            # ==========================================================
-            # 2. ROOM TABLE
-            # ==========================================================
-
-            db_map = {}
-
+            # --------------------------------------------------
+            # 2. Room occupancy table
+            # --------------------------------------------------
             try:
-
                 target_codes = tuple(r["code"] for r in MASTER_ROOMS)
-
-                opd_sql = text("""
-                    SELECT
-                        room_code,
-                        SUM(CASE WHEN room_code = '062' THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN room_code != '062' THEN 1 ELSE 0 END),
-                        COUNT(*),
-                        SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
-                    FROM opd_queue
-                    WHERE date = CURDATE()
-                    AND room_code IN :rooms
-                    GROUP BY room_code
-                """).bindparams(bindparam("rooms", expanding=True))
-
                 res = db_neoq.execute(
-                    opd_sql,
+                    text("""
+                        SELECT
+                            room_code,
+                            SUM(CASE WHEN room_code = '062' THEN 1 ELSE 0 END),
+                            SUM(CASE WHEN room_code != '062' THEN 1 ELSE 0 END),
+                            COUNT(*),
+                            SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
+                            SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
+                        FROM opd_queue
+                        WHERE date = CURDATE()
+                          AND room_code IN :rooms
+                        GROUP BY room_code
+                    """).bindparams(bindparam("rooms", expanding=True)),
                     {"rooms": target_codes}
                 ).fetchall()
-
                 db_map = {r[0]: r for r in res}
 
+                for m in MASTER_ROOMS:
+                    r = db_map.get(m["code"])
+                    rooms.append({
+                        "room_code":   m["code"],
+                        "room_name":   m["name"],
+                        "appointment": int(r[1]) if r else 0,
+                        "walk_in":     int(r[2]) if r else 0,
+                        "total":       int(r[3]) if r else 0,
+                        "finished":    int(r[4]) if r else 0,
+                        "waiting":     int(r[5]) if r else 0,
+                    })
             except Exception as e:
                 print(f"[ROOM TABLE ERROR] {e}")
-            
-            tech_queries = {
-                "lab_queue":      "lab_queue",
-                "xray_queue":     "xray_queue",
-                "pharmacy_queue": "pharmacy_queue",
-                "finance_queue":  "finance_queue"
-            }
 
-            for tech_key, table_name in tech_queries.items():
+            # --------------------------------------------------
+            # 3. Tech queues
+            # --------------------------------------------------
+            for tech_key, table_name in {
+                "lab_queue": "lab_queue",
+                "xray_queue": "xray_queue",
+                "pharmacy_queue": "pharmacy_queue",
+                "finance_queue": "finance_queue",
+            }.items():
                 try:
-                    # Query ตรงไปยังแต่ละตาราง (lab_queue, xray_queue, etc.)
                     q_res = db_neoq.execute(text(f"""
-                        SELECT 
-                            COUNT(*), 
-                            SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END), 
-                            SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END) 
-                        FROM {table_name} 
+                        SELECT COUNT(*),
+                               SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
+                        FROM {table_name}
                         WHERE date = CURDATE()
                     """)).fetchone()
-
                     if q_res:
                         tech[tech_key] = {
                             "all":      int(q_res[0] or 0),
                             "finished": int(q_res[1] or 0),
-                            "waiting":  int(q_res[2] or 0)
+                            "waiting":  int(q_res[2] or 0),
                         }
                 except Exception as e:
                     print(f"[{table_name.upper()} QUERY ERROR] {e}")
 
-            # ==========================================================
-            # 3. UNIQUE VN -> MAIN DEPT
-            # ==========================================================
-            DEPT_ROOM_GROUPS = {
-                "010": {"screening": ["010"]},
-                "062": {"screening": ["062"]},
-                "108": {"screening": ["108"]},
-                "109": {"screening": ["109"]},
-                "110": {"screening": ["110"]},
-                "111": {"screening": ["111"]},
-                "011": {"screening": ["011"]},
-                "075": {"screening": ["075"]},
-                "044": {"screening": ["044"]},
-                "033": {"screening": ["033"]},
-                "072": {"screening": ["072"]},
-                "063": {"screening": ["063"]},
-                "005": {"screening": ["005"]},
-                "042": {"screening": ["042"]},
-                "041": {"screening": ["041"]},
-            }
-
-            dept_vn_map = {}
-
+            # --------------------------------------------------
+            # 4. Lab / Xray VN sets (ส่งกลับไป merge กับ HOS state machine)
+            # --------------------------------------------------
             try:
-                screening_rooms = []
-                for info in DEPT_ROOM_GROUPS.values():
-                    screening_rooms.extend(info["screening"])
+                lab_vn = set(r[0] for r in db_neoq.execute(text("""
+                    SELECT DISTINCT vn FROM lab_queue
+                    WHERE date = CURDATE() AND status_id != '3'
+                """)).fetchall())
 
-                anchor_sql = text("""
-                    SELECT vn, room_code
-                    FROM opd_queue
-                    WHERE date = CURDATE()
-                      AND room_code IN :rooms
-                """).bindparams(bindparam("rooms", expanding=True))
-
-                anchor_rows = db_neoq.execute(
-                    anchor_sql,
-                    {"rooms": tuple(screening_rooms)}
-                ).fetchall()
-
-                for vn, room_code in anchor_rows:
-                    for dept_code, info in DEPT_ROOM_GROUPS.items():
-                        if room_code in info["screening"]:
-                            dept_vn_map[vn] = dept_code
-                            break
-
+                xray_vn = set(r[0] for r in db_neoq.execute(text("""
+                    SELECT DISTINCT vn FROM xray_queue
+                    WHERE date = CURDATE() AND status_id != '3'
+                """)).fetchall())
             except Exception as e:
-                print(f"[DEPT MAP ERROR] {e}")
-
-
-            # ==========================================================
-            # 4. PRELOAD STATES
-            # ==========================================================
-            DEPT_EXAM_ROOMS = {
-                "010": "023",
-                "062": "023",
-                "108": "069",
-                "109": "047",
-                "110": "059",
-                "111": "076",
-            }
-
-            try:
-                exam_vn = set()
-                for dept_code, exam_room in DEPT_EXAM_ROOMS.items():
-                    rows = db_neoq.execute(text("""
-                        SELECT DISTINCT vn
-                        FROM opd_queue
-                        WHERE date = CURDATE()
-                          AND room_code = :room
-                          AND status_id != '3'
-                    """), {"room": exam_room}).fetchall()
-                    for (vn,) in rows:
-                        exam_vn.add(vn)
-
-                lab_vn = set(
-                    r[0] for r in db_neoq.execute(text("""
-                        SELECT DISTINCT vn
-                        FROM lab_queue
-                        WHERE date = CURDATE()
-                          AND status_id != '3'
-                    """)).fetchall()
-                )
-
-                xray_vn = set(
-                    r[0] for r in db_neoq.execute(text("""
-                        SELECT DISTINCT vn
-                        FROM xray_queue
-                        WHERE date = CURDATE()
-                          AND status_id != '3'
-                    """)).fetchall()
-                )
-
-                payment_vn = set(
-                    r[0] for r in db_hos.execute(text("""
-                        SELECT DISTINCT o.vn
-                        FROM service_time s
-                        JOIN ovst o ON s.vn = o.vn
-                        WHERE o.vstdate = CURDATE()
-                          AND s.service19 IS NOT NULL
-                          AND s.service7 IS NULL
-                    """)).fetchall()
-                )
-
-                drug_vn = set(
-                    r[0] for r in db_hos.execute(text("""
-                        SELECT DISTINCT o.vn
-                        FROM service_time s
-                        JOIN ovst o ON s.vn = o.vn
-                        WHERE o.vstdate = CURDATE()
-                          AND s.service12 IS NOT NULL
-                          AND s.service6 IS NULL
-                    """)).fetchall()
-                )
-
-                finished_vn = set(
-                    r[0] for r in db_hos.execute(text("""
-                        SELECT DISTINCT vn
-                        FROM ovst
-                        WHERE vstdate = CURDATE()
-                          AND cur_dep = '999'
-                    """)).fetchall()
-                )
-
-            except Exception as e:
-                print(f"[PRELOAD STATES ERROR] {e}")
-
-            # ==========================================================
-            # 5. EXCLUSIVE STATE MACHINE
-            # ==========================================================
-
-            try:
-
-                for vn, dept_code in dept_vn_map.items():
-
-                    dept_stats[dept_code]["total"] += 1
-
-                    # PRIORITY ORDER
-                    if vn in finished_vn:
-                        dept_stats[dept_code]["finished"] += 1
-
-                    elif vn in drug_vn:
-                        dept_stats[dept_code]["waiting_drug"] += 1
-
-                    elif vn in payment_vn:
-                        dept_stats[dept_code]["waiting_payment"] += 1
-
-                    elif vn in xray_vn:
-                        dept_stats[dept_code]["waiting_xray"] += 1
-
-                    elif vn in lab_vn:
-                        dept_stats[dept_code]["waiting_lab"] += 1
-
-                    elif vn in exam_vn:
-                        dept_stats[dept_code]["waiting_exam"] += 1
-
-                    else:
-                        dept_stats[dept_code]["waiting_screening"] += 1
-
-            except Exception as e:
-                print(f"[STATE MACHINE ERROR] {e}")
-
-            # ==========================================================
-            # 6. KPI TOTALS
-            # ==========================================================
-
-            custom_opd_total = len(dept_vn_map)
-
-            waiting_screening = sum(
-                d["waiting_screening"]
-                for d in dept_stats.values()
-            )
-
-            waiting_exam = sum(
-                d["waiting_exam"]
-                for d in dept_stats.values()
-            )
-
-            waiting_lab = sum(
-                d["waiting_lab"]
-                for d in dept_stats.values()
-            )
-
-            waiting_xray = sum(
-                d["waiting_xray"]
-                for d in dept_stats.values()
-            )
-
-            waiting_payment = sum(
-                d["waiting_payment"]
-                for d in dept_stats.values()
-            )
-
-            waiting_drug = sum(
-                d["waiting_drug"]
-                for d in dept_stats.values()
-            )
-
-            finished_total = sum(
-                d["finished"]
-                for d in dept_stats.values()
-            )
-
-            # ==========================================================
-            # 7. BUILD ROOMS
-            # ==========================================================
-
-            for m in MASTER_ROOMS:
-
-                r = db_map.get(m["code"])
-
-                if r:
-                    rooms.append({
-                        "room_code": m["code"],
-                        "room_name": m["name"],
-                        "appointment": int(r[1]),
-                        "walk_in": int(r[2]),
-                        "total": int(r[3]),
-                        "finished": int(r[4]),
-                        "waiting": int(r[5]),
-                    })
-
-                else:
-                    rooms.append({
-                        "room_code": m["code"],
-                        "room_name": m["name"],
-                        "appointment": 0,
-                        "walk_in": 0,
-                        "total": 0,
-                        "finished": 0,
-                        "waiting": 0,
-                    })
-
-            # ==========================================================
-            # 8. DEPARTMENT CARDS
-            # ==========================================================
-
-            dept_groups = [
-                {"dept_name": "ศัลยกรรม", "codes": ["110"]},
-                {"dept_name": "สูติกรรม", "codes": ["109"]},
-                {"dept_name": "อายุรกรรม", "codes": ["111"]},
-                {"dept_name": "กุมารเวชกรรม", "codes": ["108"]},
-            ]
-
-            for g in dept_groups:
-
-                c_total = 0
-                c_waiting = 0
-                c_finished = 0
-
-                for code in g["codes"]:
-
-                    stat = dept_stats.get(code, {})
-
-                    c_total += stat.get("total", 0)
-
-                    c_waiting += (
-                        stat.get("waiting_screening", 0)
-                        + stat.get("waiting_exam", 0)
-                        + stat.get("waiting_lab", 0)
-                        + stat.get("waiting_xray", 0)
-                        + stat.get("waiting_payment", 0)
-                        + stat.get("waiting_drug", 0)
-                    )
-
-                    c_finished += stat.get("finished", 0)
-
-                department_cards.append({
-                    "dept_name": g["dept_name"],
-                    "total": c_total,
-                    "waiting": c_waiting,
-                    "finished": c_finished,
-                })
+                print(f"[LAB/XRAY VN ERROR] {e}")
 
     except Exception as e:
         print(f"[Cache Worker] NEOQ ERROR: {e}")
@@ -760,54 +569,125 @@ def fetch_neoq_sync():
         "opd_total": opd_total,
         "appointment": appointment,
         "walk_in": walk_in,
-
-        "custom_opd_total": custom_opd_total,
-
-        "waiting_screening": waiting_screening,
-        "waiting_exam": waiting_exam,
-        "waiting_lab": waiting_lab,
-        "waiting_xray": waiting_xray,
-        "waiting_payment": waiting_payment,
-        "waiting_drug": waiting_drug,
-        "finished_total": finished_total,
-
         "rooms": rooms,
-        "department_cards": department_cards,
         "tech": tech,
-        "dept_stats": dept_stats
+        "department_cards": department_cards,  # ว่าง — คำนวณใน task แทน
+        "lab_vn": lab_vn,
+        "xray_vn": xray_vn,
     }
 
 # ==========================================================
-# Background Workers
+# Background Workers (ปรับ task_update_hos + task_update_neoq)
 # ==========================================================
+
 async def task_update_hos():
     print("[Task HOSxP] เริ่มทำงาน...")
     init_analytics_db()
-
     log_counter = 0
+    
+    CUR_DEP_STATE = {
+    "999": "finished",
+    "016": "waiting_payment",
+    "030": "waiting_drug",
+    "023": "waiting_exam",
+    "014": "waiting_exam",
+    "047": "waiting_exam",
+    "059": "waiting_exam",
+    "069": "waiting_exam",
+    "076": "waiting_exam",
+    "046": "waiting_exam",
+    "007": "waiting_lab",
+    "012": "waiting_xray",
+    }
+
+    DEPT_USE_CUR_DEP = {"042", "041", "005", "075", "044"}
     while True:
         try:
-            hos_data = await asyncio.to_thread(fetch_hos_sync)
+            # รัน HOS และ NEOQ พร้อมกัน เพื่อเอา lab_vn/xray_vn มา merge
+            hos_data, neoq_data = await asyncio.gather(
+                asyncio.to_thread(fetch_hos_sync),
+                asyncio.to_thread(fetch_neoq_sync),
+            )
+
+            # ดึง VN sets ทั้งหมด
+            finished_vn = hos_data["finished_vn"]
+            drug_vn     = hos_data["drug_vn"]
+            payment_vn  = hos_data["payment_vn"]
+            exam_vn     = hos_data["exam_vn"]
+            cur_dep_map = hos_data["cur_dep_map"] 
+            lab_vn      = neoq_data["lab_vn"]
+            xray_vn     = neoq_data["xray_vn"]
+            dept_vn_map = hos_data["dept_vn_map"]
+            dept_stats  = hos_data["dept_stats"]
+
+            # reset
+            for s in dept_stats.values():
+                for key in ["total","waiting_screening","waiting_exam","waiting_lab",
+                            "waiting_xray","waiting_payment","waiting_drug","finished"]:
+                    s[key] = 0
+
+            # state machine รอบเดียว
+            for vn, dept_code in dept_vn_map.items():
+                if dept_code not in dept_stats:
+                    continue
+                s = dept_stats[dept_code]
+                s["total"] += 1
+
+                if dept_code in DEPT_USE_CUR_DEP:
+                    cur = cur_dep_map.get(vn)
+                    state = CUR_DEP_STATE.get(cur, "waiting_screening")
+                    s[state] += 1
+                else:
+                    if vn in finished_vn:
+                        s["finished"] += 1
+                    elif vn in drug_vn:
+                        s["waiting_drug"] += 1
+                    elif vn in payment_vn:
+                        s["waiting_payment"] += 1
+                    elif vn in xray_vn:
+                        s["waiting_xray"] += 1
+                    elif vn in lab_vn:
+                        s["waiting_lab"] += 1
+                    elif vn in exam_vn:
+                        s["waiting_exam"] += 1
+                    else:
+                        cur = cur_dep_map.get(vn)
+                        state = CUR_DEP_STATE.get(cur, "waiting_screening")
+                        s[state] += 1
+
+            # recalculate totals
+            hos_data["custom_opd_total"]  = len(dept_vn_map)
+            hos_data["waiting_screening"] = sum(d["waiting_screening"] for d in dept_stats.values())
+            hos_data["waiting_exam"]      = sum(d["waiting_exam"]      for d in dept_stats.values())
+            hos_data["waiting_lab"]       = sum(d["waiting_lab"]       for d in dept_stats.values())
+            hos_data["waiting_xray"]      = sum(d["waiting_xray"]      for d in dept_stats.values())
+            hos_data["waiting_payment"]   = sum(d["waiting_payment"]   for d in dept_stats.values())
+            hos_data["waiting_drug"]      = sum(d["waiting_drug"]      for d in dept_stats.values())
+            hos_data["finished_total"]    = sum(d["finished"]          for d in dept_stats.values())
             
+            # --- Build patch_data ---
             total_walkin_kiosk = hos_data["walk_in"] + hos_data["kiosk"]
-            total_hos_opd = (hos_data.get("walk_in", 0) + hos_data.get("appointment", 0) + 
-                             hos_data.get("referIn", 0) + hos_data.get("ems", 0) + 
-                             hos_data.get("telemed", 0) + hos_data.get("kiosk", 0))
+            total_hos_opd = (
+                hos_data["walk_in"] + hos_data["appointment"] +
+                hos_data["referIn"] + hos_data["ems"] +
+                hos_data["telemed"] + hos_data["kiosk"]
+            )
 
             patch_data = {
                 "system": {
-                    "hos_walk_in":          hos_data["walk_in"],
-                    "hos_appointment":      hos_data["appointment"],
-                    "hos_referIn":          hos_data["referIn"],
-                    "hos_ems":              hos_data["ems"],
-                    "hos_telemed":          hos_data["telemed"],
-                    "hos_kiosk":            hos_data["kiosk"],
-                    "hos_go_home":          hos_data.get("go_home", 0),
-                    "total_walkin":         total_walkin_kiosk,
-                    "total_OPD":            total_hos_opd,
-                    "total_drug_delivery":        hos_data["total_drug_delivery"], 
-                    "total_drug_delivery_postal": hos_data["total_drug_delivery_postal"],  
-                    "total_drug_delivery_rider":  hos_data["total_drug_delivery_rider"],
+                    "hos_walk_in":                hos_data["walk_in"],
+                    "hos_appointment":            hos_data["appointment"],
+                    "hos_referIn":                hos_data["referIn"],
+                    "hos_ems":                    hos_data["ems"],
+                    "hos_telemed":                hos_data["telemed"],
+                    "hos_kiosk":                  hos_data["kiosk"],
+                    "hos_go_home":                hos_data["go_home"],
+                    "total_walkin":               total_walkin_kiosk,
+                    "total_OPD":                  total_hos_opd,
+                    "total_drug_delivery":        hos_data["drug_delivery"],
+                    "total_drug_delivery_postal": hos_data["drug_delivery_postal"],
+                    "total_drug_delivery_rider":  hos_data["drug_delivery_rider"],
+                    "today_total_services":       neoq_data["opd_total"],
                 },
                 "summary": {
                     "avg_wait_total":       hos_data["avg_total"],
@@ -815,76 +695,60 @@ async def task_update_hos():
                     "avg_wait_examination": hos_data["avg_wait_exam"],
                     "avg_wait_drug":        hos_data["avg_wait_drug"],
                     "waiting_drug":         hos_data["waiting_drug"],
-                    "waiting_payment":      hos_data["waiting_payment"]
-                }
-            }
-            
-            # ยัดข้อมูล dep_XXX เข้าไปใน summary อัตโนมัติ
-            for dept in TRACKED_DEPTS:
-                patch_data["summary"][f"dep_{dept}"] = hos_data[f"dep_{dept}"]
-
-            await patch_redis_cache(patch_data)
-
-            if (log_counter % 60 == 0):
-                full_data = await get_cached_data() 
-                if full_data and "opd_clinics" in full_data:
-                    await save_hospital_log(full_data)
-                    await cleanup_old_logs(days_to_keep=1095) 
-                    print(f"[Log Analytics] บันทึก 2 Tables เรียบร้อย (รอบที่ {log_counter // 60})")
-
-            log_counter += 1
-            if(log_counter >= 3600): log_counter = 0
-
-        except Exception as e:
-            print(f"[Task HOSxP] Loop Error: {e}")
-            
-        await asyncio.sleep(5)
-
-async def task_update_neoq():
-    print("[Task NEOQ] เริ่มทำงาน...")
-    while True:
-        try:
-            n_data = await asyncio.to_thread(fetch_neoq_sync)
-
-            patch_data = {
-                "system": {
-                    "today_total_services": n_data["opd_total"]
+                    "waiting_payment":      hos_data["waiting_payment"],
                 },
                 "opd_clinics": {
                     "header": {
-                        "opd_total":         n_data["opd_total"],
-                        "appointment":       n_data["appointment"],
-                        "walk_in":           n_data["walk_in"],
-                        "custom_opd_total":  n_data["custom_opd_total"],
-                        "waiting_screening": n_data["waiting_screening"],
-                        "waiting_exam":      n_data["waiting_exam"],
-                        "waiting_lab":       n_data["waiting_lab"],
-                        "waiting_xray":      n_data["waiting_xray"],
-                        "waiting_payment":   n_data["waiting_payment"],
-                        "waiting_drug":      n_data["waiting_drug"],
-                        "finished_total":    n_data["finished_total"],
+                        "opd_total":         neoq_data["opd_total"],
+                        "appointment":       neoq_data["appointment"],
+                        "walk_in":           neoq_data["walk_in"],
+                        "custom_opd_total":  hos_data["custom_opd_total"],
+                        "waiting_screening": hos_data["waiting_screening"],
+                        "waiting_exam":      hos_data["waiting_exam"],
+                        "waiting_lab":       hos_data["waiting_lab"],
+                        "waiting_xray":      hos_data["waiting_xray"],
+                        "waiting_payment":   hos_data["waiting_payment"],
+                        "waiting_drug":      hos_data["waiting_drug"],
+                        "finished_total":    hos_data["finished_total"],
                     },
-                    "rooms": n_data["rooms"],
-                    "stats_010": n_data["dept_stats"]["010"],
-                    "stats_062": n_data["dept_stats"]["062"]
+                    "rooms": neoq_data["rooms"],
                 },
                 "technical_services": {
-                    "xray":     n_data["tech"]["xray_queue"],
-                    "lab":      n_data["tech"]["lab_queue"],
-                    "pharmacy": n_data["tech"]["pharmacy_queue"],
-                    "finance":  n_data["tech"]["finance_queue"],
-                }
+                    "xray":     neoq_data["tech"]["xray_queue"],
+                    "lab":      neoq_data["tech"]["lab_queue"],
+                    "pharmacy": neoq_data["tech"]["pharmacy_queue"],
+                    "finance":  neoq_data["tech"]["finance_queue"],
+                },
             }
-            
-            # ยัดข้อมูล stats_XXX เข้าไปใน opd_clinics อัตโนมัติ
+
+            # ยัด dep_XXX และ stats_XXX
             for dept in TRACKED_DEPTS:
-                patch_data["opd_clinics"][f"stats_{dept}"] = n_data["dept_stats"][dept]
+                patch_data["summary"][f"dep_{dept}"] = hos_data[f"dep_{dept}"]
+                patch_data["opd_clinics"][f"stats_{dept}"] = dept_stats.get(dept, {})
 
             await patch_redis_cache(patch_data)
+
+            # --- Analytics log (ทุก 60 รอบ = ทุก 5 นาที) ---
+            if log_counter % 60 == 0:
+                full_data = await get_cached_data()
+                if full_data and "opd_clinics" in full_data:
+                    await save_hospital_log(full_data)
+                    await cleanup_old_logs(days_to_keep=1095)
+                    print(f"[Log Analytics] บันทึกเรียบร้อย (รอบที่ {log_counter // 60})")
+
+            log_counter = (log_counter + 1) % 3600
+
         except Exception as e:
-            print(f"[Task NEOQ] Loop Error: {e}")
-            
+            print(f"[Task HOSxP] Loop Error: {e}")
+
         await asyncio.sleep(5)
+
+
+async def task_update_neoq():
+    # ลบออก — รวมการทำงานเข้า task_update_hos() แล้ว
+    # เหลือไว้เป็น no-op เผื่อมี caller อื่น
+    print("[Task NEOQ] ถูกรวมเข้า task_update_hos แล้ว — หยุดทำงาน")
+    return
 
 # ==========================================================
 # Main Entry Point
