@@ -254,6 +254,12 @@ def fetch_hos_sync():
         "waiting_xray": 0,
         "finished_total": 0,
         "dept_stats": {},
+        "vn_info_map": {},
+        "cur_dep_map": {},
+        "finished_vn": set(),
+        "drug_vn": set(),
+        "payment_vn": set(),
+        "exam_vn": set(),
     }
 
     # init dept_stats ทุก dept
@@ -543,7 +549,17 @@ def fetch_neoq_sync():
                     q_res = db_neoq.execute(text(f"""
                         SELECT COUNT(*),
                                SUM(CASE WHEN status_id = '3' THEN 1 ELSE 0 END),
-                               SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END)
+                               SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END),
+                               AVG(CASE 
+                                   WHEN status_id = '3' AND `time` IS NOT NULL AND visit_time IS NOT NULL 
+                                   THEN TIMESTAMPDIFF(MINUTE, visit_time, `time`) 
+                                   ELSE NULL 
+                               END),
+                               SEC_TO_TIME(AVG(CASE 
+                                   WHEN status_id = '3' AND `time` IS NOT NULL AND visit_time IS NOT NULL 
+                                   THEN TIME_TO_SEC(TIMEDIFF(`time`, visit_time)) 
+                                   ELSE NULL 
+                               END))
                         FROM {table_name}
                         WHERE date = CURDATE()
                     """)).fetchone()
@@ -552,6 +568,8 @@ def fetch_neoq_sync():
                             "all":      int(q_res[0] or 0),
                             "finished": int(q_res[1] or 0),
                             "waiting":  int(q_res[2] or 0),
+                            "avg_wait_minutes": float(q_res[3] or 0.0),
+                            "avg_wait_formatted": str(q_res[4] or "00:00:00")
                         }
                 except Exception as e:
                     print(f"[{table_name.upper()} QUERY ERROR] {e}")
