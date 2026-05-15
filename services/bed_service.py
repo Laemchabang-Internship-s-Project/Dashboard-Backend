@@ -23,6 +23,12 @@ def summarize_beds(rows: List[Dict[str, Any]]) -> Dict:
         })
     })
 
+    target_beds = {
+        "ด.18", "ด.05", "ด.06", "ด.13", "ด.15", "ด.12", "ด.02", 
+        "ตู้อบ7", 
+        "ม.ด2"
+    }
+    
     def classify(status_id: int) -> str:
         if status_id is None:
             return "other"
@@ -36,7 +42,11 @@ def summarize_beds(rows: List[Dict[str, Any]]) -> Dict:
     for row in rows:
         ward = row.get("ward")
         room = row.get("room")
+        bed_name = row.get("bed_name") 
         status_id = row.get("bed_status_type_id")
+        if room == "ห้องสามัญเด็ก":
+            if bed_name not in target_beds:
+                continue
 
         bucket = classify(status_id)
 

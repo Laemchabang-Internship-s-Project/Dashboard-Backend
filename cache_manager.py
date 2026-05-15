@@ -187,7 +187,7 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
 # Master Data
 # ==========================================================
 # ตัวแปรหลักสำหรับดึงข้อมูลห้องที่ต้องการคำนวณเวลาแบบ Dynamics (ไม่ต้อง hardcode แล้ว)
-TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063","005","042","041","023","066","077"
+TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063","005","042","041","066","077"
     ,"074", "901", "902", "903", "904", "905"
 ]
 
@@ -445,10 +445,23 @@ def fetch_hos_sync():
                   AND s.service5 IS NULL
             """)).fetchall())
 
+            # พบแพทย์แล้ว (service5 ✓ หรือ service11 ✓) แต่ยังไม่ถูกส่งต่อไหนเลย
+            after_exam_vn = set(r[0] for r in db_hos.execute(text("""
+                SELECT DISTINCT o.vn
+                FROM service_time s JOIN ovst o ON s.vn = o.vn
+                WHERE o.vstdate = CURDATE()
+                AND s.service5  IS NOT NULL
+                AND s.service11 IS NOT NULL
+                AND s.service12 IS NULL
+                AND s.service19 IS NULL
+                AND o.cur_dep NOT IN ('999','016','030')
+            """)).fetchall())
+
             hos_data["finished_vn"] = finished_vn
             hos_data["drug_vn"]     = drug_vn
             hos_data["payment_vn"]  = payment_vn
             hos_data["exam_vn"]     = exam_vn    
+            hos_data["after_exam_vn"]     = after_exam_vn    
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
     
@@ -617,27 +630,29 @@ async def task_update_hos():
     "999": "finished",
     "016": "waiting_payment",
     "030": "waiting_drug",
-    "023": "waiting_exam",    # จุดรอตรวจ -> รอพบแพทย์
-    "014": "waiting_exam",    # ห้องหลังพบแพทย์ -> รอพบแพทย์
+
+    "023": "waiting_exam",
+    "010": "waiting_screening",
+    "105": "waiting_screening",
+
+    "014": "waiting_drug",   
     "047": "waiting_exam",
     "059": "waiting_exam",
     "069": "waiting_exam",
     "076": "waiting_exam",
     "046": "waiting_exam",
-    "007": "waiting_lab",
+    "007": "waiting_lab",    
     "012": "waiting_xray",
 
-    "074": "waiting_exam",      # หน่วยไตเทียม -> รอตรวจ/รับบริการ
-
-    "901": "waiting_screening", # เวชระเบียน -> รอซักประวัติ
-    "902": "waiting_screening", # ซักประวัติ -> รอซักประวัติ
-    "903": "waiting_exam",      # ห้องตรวจแพทย์ -> รอตรวจ
-    "905": "waiting_exam",      # ห้องทันตกรรม -> รอตรวจ
-    "904": "waiting_drug",      # ห้องจ่ายยา -> รอรับยา
+    "074": "waiting_exam",
+    "901": "waiting_screening",
+    "902": "waiting_screening",
+    "903": "waiting_exam",
+    "905": "waiting_exam",
+    "904": "waiting_drug",
     
-    # เพิ่มรหัสใหม่ที่ตรวจเจอว่าหลุดคิว
-    "066": "waiting_screening", # ศูนย์รับส่งต่อ -> รอซักประวัติ
-    "077": "waiting_screening", # งานให้คำปรึกษา -> รอซักประวัติ
+    "066": "waiting_screening",
+    "077": "waiting_screening",
 }
 
     DEPT_USE_CUR_DEP = {"042", "041", "005", "075", "044"}
@@ -653,6 +668,7 @@ async def task_update_hos():
             drug_vn     = hos_data["drug_vn"]
             payment_vn  = hos_data["payment_vn"]
             exam_vn     = hos_data["exam_vn"]
+            after_exam_vn = hos_data["after_exam_vn"]
             lab_vn      = neoq_data["lab_vn"]
             xray_vn     = neoq_data["xray_vn"]
             vn_info_map = hos_data["vn_info_map"] # ใช้ตัวนี้เป็นหลัก
@@ -665,32 +681,35 @@ async def task_update_hos():
                     s[key] = 0
 
             # State Machine: Track ตามตำแหน่งปัจจุบัน (cur_dept)
+            # แทนที่บล็อกนับยอดเดิมด้วยอันนี้ครับ
             for vn, (main_dept, cur_dept) in vn_info_map.items():
-                target_dept = cur_dept if cur_dept in TRACKED_DEPTS else main_dept
-
-                if target_dept not in dept_stats:
-                    continue
-                
-                s = dept_stats[target_dept]
-                s["total"] += 1 
-
-                # เช็คสถานะตามลำดับ Priority
                 if vn in finished_vn:
-                    s["finished"] += 1
+                    state = "finished"
                 elif vn in drug_vn:
-                    s["waiting_drug"] += 1
+                    state = "waiting_drug"
                 elif vn in payment_vn:
-                    s["waiting_payment"] += 1
+                    state = "waiting_payment"
                 elif vn in xray_vn:
-                    s["waiting_xray"] += 1
+                    state = "waiting_xray"
                 elif vn in lab_vn:
-                    s["waiting_lab"] += 1
+                    state = "waiting_lab"
                 elif vn in exam_vn:
-                    s["waiting_exam"] += 1
+                    state = "waiting_exam"
+                elif vn in after_exam_vn:
+                    state = "waiting_exam"
                 else:
-                    # Fallback: ใช้สถานะตาม cur_dep
                     state = CUR_DEP_STATE.get(cur_dept, "waiting_screening")
-                    s[state] += 1
+
+                # 2. ระบุแผนก (Target Dept) 
+                # ใช้แผนกหลัก (main_dept) เป็นตัวโชว์ที่ Dashboard บล็อกนั้นๆ 
+                # ยกเว้นรหัสบ่อวิน หรือแผนกพิเศษ ให้ใช้ cur_dept
+                target_dept = main_dept 
+                if cur_dept.startswith('90') or cur_dept in {"011", "075"}:
+                    target_dept = cur_dept
+
+                if target_dept in dept_stats:
+                    dept_stats[target_dept]["total"] += 1
+                    dept_stats[target_dept][state] += 1
 
             # สรุปยอดรวมส่ง Dashboard
             hos_data["custom_opd_total"]  = len(vn_info_map)
