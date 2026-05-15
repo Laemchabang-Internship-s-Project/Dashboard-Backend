@@ -11,23 +11,19 @@ KEY_BED_CACHE = "beds_summary_cache"
 def fetch_beds_sync():
     try:
         with SessionHOS() as db:
-            # ใช้ SQL ของคุณในการดึงข้อมูล โดย Mapping ชื่อคอลัมน์ให้เข้ากับ Service
+            # เพิ่ม b.bedno AS bed_name เพื่อให้ Service รู้ว่าเตียงนี้เลขอะไร
             sql = text("""
                 SELECT 
-                    w.name AS ward,           -- ชื่อวอร์ด
-                    r.name AS room,           -- ชื่อห้อง
+                    w.name AS ward,
+                    r.name AS room,
+                    b.bedno AS bed_name,
                     b.bed_status_type_id AS bed_status_type_id
                 FROM bedno b
                 LEFT JOIN roomno r ON r.roomno = b.roomno
                 LEFT JOIN ward w ON w.ward = r.ward
             """)
-            
             result = db.execute(sql).fetchall()
-            
-            # แปลง SQLAlchemy Row เป็น List of Dict
             rows = [dict(row._mapping) for row in result]
-            
-            # ส่งไปประมวลผลที่ Service (ซึ่งรองรับค่า NULL เป็น 'other' แล้ว)
             return summarize_beds(rows)
             
     except Exception as e:
