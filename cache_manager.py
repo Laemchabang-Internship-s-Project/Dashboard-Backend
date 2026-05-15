@@ -187,7 +187,7 @@ async def update_fuel_cache(fuel_data: dict) -> bool:
 # Master Data
 # ==========================================================
 # ตัวแปรหลักสำหรับดึงข้อมูลห้องที่ต้องการคำนวณเวลาแบบ Dynamics (ไม่ต้อง hardcode แล้ว)
-TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063","005","042","041","023","066","077"
+TRACKED_DEPTS = ["010", "062", "108", "109", "110", "111","011","075","044","033","072","063","005","042","041","066","077"
     ,"074", "901", "902", "903", "904", "905"
 ]
 
@@ -439,10 +439,23 @@ def fetch_hos_sync():
                   AND s.service5 IS NULL
             """)).fetchall())
 
+            # พบแพทย์แล้ว (service5 ✓ หรือ service11 ✓) แต่ยังไม่ถูกส่งต่อไหนเลย
+            after_exam_vn = set(r[0] for r in db_hos.execute(text("""
+                SELECT DISTINCT o.vn
+                FROM service_time s JOIN ovst o ON s.vn = o.vn
+                WHERE o.vstdate = CURDATE()
+                AND s.service5  IS NOT NULL
+                AND s.service11 IS NOT NULL
+                AND s.service12 IS NULL
+                AND s.service19 IS NULL
+                AND o.cur_dep NOT IN ('999','016','030')
+            """)).fetchall())
+
             hos_data["finished_vn"] = finished_vn
             hos_data["drug_vn"]     = drug_vn
             hos_data["payment_vn"]  = payment_vn
             hos_data["exam_vn"]     = exam_vn    
+            hos_data["after_exam_vn"]     = after_exam_vn    
     except Exception as e:
         print(f"[Cache Worker] HOSxP Error: {e}")
     
@@ -637,6 +650,7 @@ async def task_update_hos():
             drug_vn     = hos_data["drug_vn"]
             payment_vn  = hos_data["payment_vn"]
             exam_vn     = hos_data["exam_vn"]
+            after_exam_vn = hos_data["after_exam_vn"]
             lab_vn      = neoq_data["lab_vn"]
             xray_vn     = neoq_data["xray_vn"]
             vn_info_map = hos_data["vn_info_map"] # ใช้ตัวนี้เป็นหลัก
@@ -651,7 +665,6 @@ async def task_update_hos():
             # State Machine: Track ตามตำแหน่งปัจจุบัน (cur_dept)
             # แทนที่บล็อกนับยอดเดิมด้วยอันนี้ครับ
             for vn, (main_dept, cur_dept) in vn_info_map.items():
-                # 1. ระบุสถานะก่อน (State)
                 if vn in finished_vn:
                     state = "finished"
                 elif vn in drug_vn:
@@ -664,8 +677,9 @@ async def task_update_hos():
                     state = "waiting_lab"
                 elif vn in exam_vn:
                     state = "waiting_exam"
+                elif vn in after_exam_vn:
+                    state = "waiting_exam"
                 else:
-                    
                     state = CUR_DEP_STATE.get(cur_dept, "waiting_screening")
 
                 # 2. ระบุแผนก (Target Dept) 
