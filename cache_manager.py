@@ -630,6 +630,7 @@ async def task_update_hos():
     print("[Task HOSxP] เริ่มทำงาน...")
     init_analytics_db()
     log_counter = 0
+    last_cleanup_date = None
     
     CUR_DEP_STATE = {
     "999": "finished",
@@ -798,7 +799,13 @@ async def task_update_hos():
                 full_data = await get_cached_data()
                 if full_data and "opd_clinics" in full_data:
                     await save_hospital_log(full_data)
-                    await cleanup_old_logs(days_to_keep=1095)
+                    
+                    # Cleanup old logs once a day
+                    current_date = datetime.now().date()
+                    if last_cleanup_date != current_date:
+                        await cleanup_old_logs(days_to_keep=1095)
+                        last_cleanup_date = current_date
+                        
                     print(f"[Log Analytics] บันทึกเรียบร้อย (รอบที่ {log_counter // 60})")
 
             log_counter = (log_counter + 1) % 3600
