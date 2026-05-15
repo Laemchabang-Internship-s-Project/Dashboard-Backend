@@ -321,9 +321,14 @@ def fetch_hos_sync():
                   AND vstdate = CURDATE()
             """)).fetchone()
             if delivery_res:
-                hos_data["drug_delivery"]        = int(delivery_res[2] or 0)
-                hos_data["drug_delivery_postal"] = int(delivery_res[0] or 0)
-                hos_data["drug_delivery_rider"]  = int(delivery_res[1] or 0)
+                postal_count = int(delivery_res[0] or 0)
+                rider_count  = int(delivery_res[1] or 0)
+                
+                
+                hos_data["drug_delivery_postal"] = postal_count
+                hos_data["drug_delivery_rider"]  = rider_count
+            
+                hos_data["drug_delivery"]        = postal_count + rider_count
 
             # --------------------------------------------------
             # 3. Wait time averages per dept (dynamic)
