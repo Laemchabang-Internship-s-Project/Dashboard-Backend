@@ -3,46 +3,14 @@ from pydantic import BaseModel, Field
 from typing import Dict, List
 import json
 from cache_manager import redis_client
-from tasks.bed_worker import KEY_BED_CACHE
+
 from utils.security import get_api_key
 from routers.auth import get_current_user
 from rate_limiter import limiter
 
 router = APIRouter(prefix="/api/beds", tags=["Beds"])
 
-# Redis key สำหรับเก็บ config จำนวนเตียงที่ตั้งค่าแบบ Fixed
-KEY_BED_CONFIG = "beds_config_fixed_wards"
-
-# ค่า default ของ Config ทั้งหมด
-DEFAULT_CONFIG = {
-    "wards": {
-        "ผู้ป่วยอายุรกรรมหญิง": 30,
-        "ผู้ป่วยพิเศษอาคารอ่าวอุดม ชั้น 4": 12,
-        "ER Observ": 8,
-        "ODS ward": 6,
-        "หน่วยไตเทียม": 8,
-        "มินิธัญญารักษ์": 6,
-        "หอผู้ป่วยวิกฤตทารกแรกเกิด": 3,
-        "หลังคลอด": 16,
-        "ผู้ป่วยศัลยชาย": 22,
-        "ผู้ป่วยศัลยหญิง": 20,
-        "ผู้ป่วยอายุรกรรมชาย": 30,
-        "ผู้ป่วยเด็ก": 20,
-        "หอผู้ป่วย ICU": 10,
-        "ห้องคลอด": 6,
-    },
-    "allowed_wards": [
-        "หลังคลอด",
-        "ผู้ป่วยเด็ก",
-        "ผู้ป่วยศัลยชาย",
-        "ผู้ป่วยศัลยหญิง",
-        "ผู้ป่วยอายุรกรรมชาย",
-        "ผู้ป่วยอายุรกรรมหญิง",
-        "ผู้ป่วยพิเศษอาคารอ่าวอุดม ชั้น 4",
-        "มินิธัญญารักษ์"
-    ],
-    "total_beds": 150
-}
+from utils.bed_constants import KEY_BED_CACHE, KEY_BED_CONFIG, DEFAULT_CONFIG
 
 class BedConfigRequest(BaseModel):
     wards: Dict[str, int] = Field(..., description="ชื่อ ward → จำนวนเตียงทั้งหมด")

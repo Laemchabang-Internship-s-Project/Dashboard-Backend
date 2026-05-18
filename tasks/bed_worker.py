@@ -5,39 +5,7 @@ from database_hos import SessionLocal as SessionHOS
 from services.bed_service import summarize_beds
 from cache_manager import redis_client
 
-# กำหนดชื่อ Key ใน Redis สำหรับเก็บข้อมูลเตียงโดยเฉพาะ
-KEY_BED_CACHE = "beds_summary_cache"
-KEY_BED_CONFIG = "beds_config_fixed_wards"
-
-DEFAULT_CONFIG = {
-    "wards": {
-        "ผู้ป่วยอายุรกรรมหญิง": 30,
-        "ผู้ป่วยพิเศษอาคารอ่าวอุดม ชั้น 4": 12,
-        "ER Observ": 8,
-        "ODS ward": 6,
-        "หน่วยไตเทียม": 8,
-        "มินิธัญญารักษ์": 6,
-        "หอผู้ป่วยวิกฤตทารกแรกเกิด": 3,
-        "หลังคลอด": 16,
-        "ผู้ป่วยศัลยชาย": 22,
-        "ผู้ป่วยศัลยหญิง": 20,
-        "ผู้ป่วยอายุรกรรมชาย": 30,
-        "ผู้ป่วยเด็ก": 20,
-        "หอผู้ป่วย ICU": 10,
-        "ห้องคลอด": 6,
-    },
-    "allowed_wards": [
-        "หลังคลอด",
-        "ผู้ป่วยเด็ก",
-        "ผู้ป่วยศัลยชาย",
-        "ผู้ป่วยศัลยหญิง",
-        "ผู้ป่วยอายุรกรรมชาย",
-        "ผู้ป่วยอายุรกรรมหญิง",
-        "ผู้ป่วยพิเศษอาคารอ่าวอุดม ชั้น 4",
-        "มินิธัญญารักษ์"
-    ],
-    "total_beds": 150
-}
+from utils.bed_constants import KEY_BED_CACHE, KEY_BED_CONFIG, DEFAULT_CONFIG
 
 def fetch_beds_sync(config_data=None):
     try:

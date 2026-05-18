@@ -24,7 +24,8 @@ def summarize_beds(rows: List[Dict[str, Any]], config: Dict = None) -> Dict:
         "มินิธัญญารักษ์": "มินิธัญญารักษ์",
         "หน่วยไตเทียม": "หน่วยไตเทียม",
         "ER Observ": "ER Observ",
-        "ICU": "หอผู้ป่วย ICU"
+        "ICU": "หอผู้ป่วย ICU",
+        "ODS ward": "ODS ward"
     }
 
     ward_map = defaultdict(lambda: {
