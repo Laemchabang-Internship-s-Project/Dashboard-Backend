@@ -40,7 +40,11 @@ class FuelPayload(BaseModel):
     status:          str            # สถานะ
     app_name:        Optional[str] = ""  # ชื่อผู้อนุมัติ
 
-
+class FuelUpdatePayload(BaseModel):
+    timestamp: str       # Timestamp ที่ต้องการอัปเดต
+    status: str          # สถานะใหม่
+    app_name: str        # ชื่อผู้อนุมัติ
+    
 # ----------------------------------------------------------
 # POST /api/fuel/webhook
 # ----------------------------------------------------------
@@ -76,6 +80,62 @@ async def fuel_webhook(
         "status": "ok",
         "message": "Fuel data updated and broadcasted",
         "data": fuel_data,
+    }
+
+
+# ----------------------------------------------------------
+# POST /api/fuel/webhook/update
+# ----------------------------------------------------------
+@router.post("/webhook/update")
+@limiter.limit("20/minute")
+async def fuel_webhook_update(
+    request: Request,
+    payload: FuelUpdatePayload,
+    x_webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
+    db: Session = Depends(get_analytics_db)
+):
+    if FUEL_WEBHOOK_SECRET and x_webhook_secret != FUEL_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 1. บันทึกอัปเดตลง Database
+    record = db.query(FuelRecord).filter(FuelRecord.timestamp == payload.timestamp).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found in database")
+        
+    record.status = payload.status
+    record.app_name = payload.app_name
+    db.commit()
+
+    # 2. อัปเดตลง Redis Cache แบบเจาะจง
+    from cache_manager import patch_redis_cache
+    
+    items = await redis_client.lrange(KEY_FUEL_HISTORY, 0, -1)
+    updated_data = None
+    
+    for i, item_str in enumerate(items):
+        item_data = json.loads(item_str)
+        if item_data.get("timestamp") == payload.timestamp:
+            item_data["status"] = payload.status
+            item_data["app_name"] = payload.app_name
+            updated_data = item_data
+            
+            # อัปเดตกลับไปที่ List เดิม
+            await redis_client.lset(KEY_FUEL_HISTORY, i, json.dumps(item_data, ensure_ascii=False))
+            
+            # ถ้าเป็น index 0 แปลว่าเป็นข้อมูลล่าสุด ต้องอัปเดต KEY_FUEL_CACHE ด้วย
+            if i == 0:
+                await redis_client.set(KEY_FUEL_CACHE, json.dumps(item_data, ensure_ascii=False))
+                await patch_redis_cache({"car": {"fuel_latest": item_data}})
+            break
+
+    if not updated_data:
+        # กรณีข้อมูลเก่ามากจนตกขอบ Redis ไปแล้ว (ไม่อยู่ใน 100 อันดับแรก) ให้ถือว่า Success เพราะอัปเดต DB ไปแล้ว
+        pass
+
+    return {
+        "status": "ok",
+        "message": "Fuel status updated",
+        "data": updated_data or {"timestamp": payload.timestamp, "status": payload.status}
     }
 
 

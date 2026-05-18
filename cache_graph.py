@@ -188,22 +188,24 @@ def fetch_doctor_operations_stats_sync():
             rows_depts = db_hos.execute(sql_depts).fetchall()
             data["departments"] = [{"department_name": r[0], "year": r[1], "month": r[2], "total_count": int(r[3])} for r in rows_depts]
 
-            # 4. Drilldown (Doctor -> Operations)
+            # 4. Drilldown (Doctor + Dept -> Operations) เพิ่ม dept_name เพื่อรองรับ dept_drilldown
             sql_drilldown = text("""
                 SELECT 
                     COALESCE(d.name, 'ไม่ระบุ') AS doctor_name,
                     COALESCE(e.name, 'ไม่ระบุ') AS operation_name,
+                    COALESCE(k.department, 'ไม่ระบุ') AS dept_name,
                     COALESCE(DATE_FORMAT(NULLIF(do.begin_date_time, '0000-00-00 00:00:00'), '%Y'), 'Unknown') AS year,
                     COUNT(do.doctor_operation_id) AS total_count
                 FROM doctor_operation do
                 LEFT JOIN doctor d ON do.doctor = d.code
                 LEFT JOIN er_oper_code e ON do.er_oper_code = e.er_oper_code
+                LEFT JOIN kskdepartment k ON do.depcode = k.depcode
                 WHERE do.begin_date_time IS NOT NULL AND do.begin_date_time >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
                   AND d.name IS NOT NULL AND e.name IS NOT NULL
-                GROUP BY doctor_name, operation_name, year;
+                GROUP BY doctor_name, operation_name, dept_name, year;
             """)
             rows_drilldown = db_hos.execute(sql_drilldown).fetchall()
-            data["drilldown"] = [{"doctor_name": r[0], "operation_name": r[1], "year": r[2], "total_count": int(r[3])} for r in rows_drilldown]
+            data["drilldown"] = [{"doctor_name": r[0], "operation_name": r[1], "dept_name": r[2], "year": r[3], "total_count": int(r[4])} for r in rows_drilldown]
 
             return data
     except Exception as e:
@@ -244,7 +246,7 @@ async def task_update_graph():
         await asyncio.sleep(_get_sleep_seconds())
 
 
-async def get_graph_data(view: str = "daily", month: str = None, year: str = None, doctor_name: str = None):
+async def get_graph_data(view: str = "daily", month: str = None, year: str = None, doctor_name: str = None, operation_name: str = None, dept_name: str = None):
     if view == "monthly":
         raw = await redis_client.get(KEY_GRAPH_MONTHLY)
         if not raw:
@@ -308,6 +310,58 @@ async def get_graph_data(view: str = "daily", month: str = None, year: str = Non
             name = r.get("operation_name") or r.get("doctor_name") or r.get("department_name")
             agg[name] = agg.get(name, 0) + r["total_count"]
             
+        return sorted([{"name": k, "total_count": v} for k, v in agg.items()], key=lambda x: x["total_count"], reverse=True)[:10]
+    elif view == "operation_drilldown":
+        # Operations → Doctors: เมื่อกดที่หัตถการ ดูว่าแพทย์คนไหนทำมากที่สุด
+        raw = await redis_client.get(KEY_GRAPH_STATS_DRILLDOWN)
+        if not raw:
+            return []
+        data = json.loads(raw)
+
+        if not year:
+            from datetime import datetime
+            current_year = str(datetime.now().year)
+            available_years = sorted(set(r.get("year", "") for r in data if r.get("year") not in ("", "Unknown") and r.get("year") <= current_year), reverse=True)
+            if available_years:
+                year = available_years[0]
+
+        if year:
+            data = [r for r in data if r.get("year") == year]
+        if operation_name:
+            data = [r for r in data if r.get("operation_name") == operation_name]
+
+        agg = {}
+        for r in data:
+            name = r.get("doctor_name")
+            if name:
+                agg[name] = agg.get(name, 0) + r["total_count"]
+
+        return sorted([{"name": k, "total_count": v} for k, v in agg.items()], key=lambda x: x["total_count"], reverse=True)[:10]
+    elif view == "dept_drilldown":
+        # Departments → Operations: เมื่อกดที่แผนก ดูว่าแผนกนั้นทำหัตถการอะไรมากที่สุด
+        raw_drill = await redis_client.get(KEY_GRAPH_STATS_DRILLDOWN)
+        if not raw_drill:
+            return []
+        drill_data = json.loads(raw_drill)
+
+        if not year:
+            from datetime import datetime
+            current_year = str(datetime.now().year)
+            available_years = sorted(set(r.get("year", "") for r in drill_data if r.get("year") not in ("", "Unknown") and r.get("year") <= current_year), reverse=True)
+            if available_years:
+                year = available_years[0]
+
+        if year:
+            drill_data = [r for r in drill_data if r.get("year") == year]
+        if dept_name:
+            drill_data = [r for r in drill_data if r.get("dept_name") == dept_name]
+
+        agg = {}
+        for r in drill_data:
+            name = r.get("operation_name")
+            if name:
+                agg[name] = agg.get(name, 0) + r["total_count"]
+
         return sorted([{"name": k, "total_count": v} for k, v in agg.items()], key=lambda x: x["total_count"], reverse=True)[:10]
     else:
         raw = await redis_client.get(KEY_GRAPH_DAILY)

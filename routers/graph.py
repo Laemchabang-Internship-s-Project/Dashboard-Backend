@@ -7,23 +7,27 @@ router = APIRouter(prefix="/api/graph", tags=["Graph Data"])
 
 @router.get("/doctor-operations", dependencies=[Depends(get_api_key)])
 async def get_doctor_operations_graph(
-    view:  str           = Query("daily",  description="daily | monthly | yoy | operations | doctors | departments | drilldown"),
+    view:  str           = Query("daily",  description="daily | monthly | yoy | operations | doctors | departments | drilldown | operation_drilldown | dept_drilldown"),
     month: Optional[str] = Query(None,     description="กรอง daily ตามเดือน เช่น '2025-04'"),
     year:  Optional[str] = Query(None,     description="กรอง monthly ตามปี เช่น '2025'"),
     doctor_name: Optional[str] = Query(None, description="ชื่อแพทย์สำหรับ view=drilldown"),
+    operation_name: Optional[str] = Query(None, description="ชื่อหัตถการสำหรับ view=operation_drilldown"),
+    dept_name: Optional[str] = Query(None, description="ชื่อแผนกสำหรับ view=dept_drilldown"),
 ):
     """
     ดึงข้อมูลกราฟการผ่าตัดของแพทย์ (อัปเดตสัปดาห์ละ 1 ครั้ง)
 
-    - **view=daily**       → raw daily rows (90 วันล่าสุด) กรอง ?month=YYYY-MM ได้
-    - **view=monthly**     → aggregate รายเดือน กรอง ?year=YYYY ได้
-    - **view=yoy**         → aggregate รายปี-เดือน (ทุกปี)
-    - **view=operations**  → 10 อันดับหัตถการยอดฮิต กรอง ?year=YYYY หรือ ?month=YYYY-MM ได้
-    - **view=doctors**     → 10 อันดับแพทย์ที่ทำหัตถการมากที่สุด กรอง ?year=YYYY หรือ ?month=YYYY-MM ได้
-    - **view=departments** → 10 อันดับแผนกที่มีหัตถการมากที่สุด กรอง ?year=YYYY หรือ ?month=YYYY-MM ได้
-    - **view=drilldown**   → 10 อันดับหัตถการของแพทย์ กรอง ?doctor_name=xxx&year=YYYY ได้
+    - **view=daily**                 → raw daily rows (90 วันล่าสุด) กรอง ?month=YYYY-MM ได้
+    - **view=monthly**               → aggregate รายเดือน กรอง ?year=YYYY ได้
+    - **view=yoy**                   → aggregate รายปี-เดือน (ทุกปี)
+    - **view=operations**            → 10 อันดับหัตถการยอดฮิต กรอง ?year=YYYY หรือ ?month=YYYY-MM ได้
+    - **view=doctors**               → 10 อันดับแพทย์ที่ทำหัตถการมากที่สุด
+    - **view=departments**           → 10 อันดับแผนกที่มีหัตถการมากที่สุด
+    - **view=drilldown**             → 10 อันดับหัตถการของแพทย์ กรอง ?doctor_name=xxx
+    - **view=operation_drilldown**   → 10 อันดับแพทย์ที่ทำหัตถการนั้น กรอง ?operation_name=xxx
+    - **view=dept_drilldown**        → 10 อันดับหัตถการในแผนกนั้น กรอง ?dept_name=xxx
     """
-    data = await get_graph_data(view=view.strip(), month=month, year=year, doctor_name=doctor_name)
+    data = await get_graph_data(view=view.strip(), month=month, year=year, doctor_name=doctor_name, operation_name=operation_name, dept_name=dept_name)
     return {"status": "success", "view": view.strip(), "data": data}
 
 @router.get("/doctor-operations/daily-drilldown", dependencies=[Depends(get_api_key)])
@@ -36,7 +40,7 @@ async def get_doctor_operations_daily_drilldown(
     data = await get_daily_operations_drilldown(date_str)
     return {"status": "success", "date": date_str, "data": data}
 
-@router.post("/trigger-cache-update")
+@router.post("/trigger-cache-update",dependencies=[Depends(get_api_key)])
 async def trigger_cache_update():
     from cache_graph import fetch_doctor_operations_stats_sync, redis_client, KEY_GRAPH_STATS_OPER, KEY_GRAPH_STATS_DOC, KEY_GRAPH_STATS_DEPT, KEY_GRAPH_STATS_DRILLDOWN
     import json
