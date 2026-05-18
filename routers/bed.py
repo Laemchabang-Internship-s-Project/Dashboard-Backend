@@ -143,6 +143,18 @@ async def update_bed_config(
         )
 
         print(f"[Bed Config] อัปเดตแล้ว")
+
+        # สั่งให้ประมวลผลข้อมูลเตียงใหม่เดี๋ยวนั้นเพื่อให้อัปเดตทันที
+        try:
+            from tasks.bed_worker import fetch_beds_sync
+            import asyncio
+            bed_data = await asyncio.to_thread(fetch_beds_sync, new_config)
+            if bed_data:
+                await redis_client.set(KEY_BED_CACHE, json.dumps(bed_data, ensure_ascii=False))
+                print(f"[Bed Config] บังคับประมวลผล Summary ใหม่เสร็จสิ้น")
+        except Exception as summary_err:
+            print(f"[Bed Config] ไม่สามารถประมวลผล Summary ทันทีได้: {summary_err}")
+
         return {
             "status": "success",
             "message": "บันทึก config เตียงสำเร็จ",
