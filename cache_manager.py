@@ -637,32 +637,45 @@ async def task_update_hos():
     last_cleanup_date = None
     
     CUR_DEP_STATE = {
+    # === จบแล้ว ===
     "999": "finished",
-    "016": "waiting_payment",
-    "030": "waiting_drug",
-
-    "023": "waiting_exam",
-    "010": "waiting_screening",
-    "105": "waiting_screening",
-
-    "014": "waiting_drug",   
-    "047": "waiting_exam",
-    "059": "waiting_exam",
-    "069": "waiting_exam",
-    "076": "waiting_exam",
-    "046": "waiting_exam",
-    "007": "waiting_lab",    
-    "012": "waiting_xray",
-
-    "074": "waiting_exam",
-    "901": "waiting_screening",
-    "902": "waiting_screening",
-    "903": "waiting_exam",
-    "905": "waiting_exam",
-    "904": "waiting_drug",
     
+    # === รอจ่ายเงิน ===
+    "016": "waiting_payment",   # ห้องจ่ายเงินผู้ป่วยนอก
+    "053": "waiting_payment",   # การเงิน
+    "135": "waiting_payment",   # ศูนย์จัดเก็บรายได้
+
+    # === รอรับยา ===
+    "030": "waiting_drug",      # ห้องจ่ายยา
+    "014": "waiting_drug",      # ห้องหลังพบแพทย์
+    "904": "waiting_drug",      # ห้องจ่ายยา (บ่อวิน)
+
+    # === รอซักประวัติ ===
+    "010": "waiting_screening",
+    "062": "waiting_screening",
+    "105": "waiting_screening",
     "066": "waiting_screening",
     "077": "waiting_screening",
+    "901": "waiting_screening",
+    "902": "waiting_screening",
+
+    # === รอตรวจ ===
+    "023": "waiting_exam",      # จุดรอตรวจ
+    "047": "waiting_exam",      # หน้าห้องตรวจสูติ
+    "059": "waiting_exam",      # หน้าห้องตรวจศัลยกรรม
+    "069": "waiting_exam",      # หน้าห้องตรวจเด็ก
+    "076": "waiting_exam",      # ห้องตรวจอายุรกรรม
+    "046": "waiting_exam",      # หลังพบแพทย์ PCU
+    "074": "waiting_exam",      # หน่วยไตเทียม
+    "903": "waiting_exam",      # ห้องตรวจแพทย์ (บ่อวิน)
+    "905": "waiting_exam",      # ห้องทันตกรรม (บ่อวิน)
+
+    # === รอ Lab ===
+    "007": "waiting_lab",       # ห้อง LAB
+
+    # === รอ X-ray ===
+    "012": "waiting_xray",      # รังสีวิทยา
+    "112": "waiting_xray",      # ศูนย์ CT Scan
 }
 
     DEPT_USE_CUR_DEP = {"042", "041", "005", "075", "044"}
@@ -695,6 +708,8 @@ async def task_update_hos():
             for vn, (main_dept, cur_dept) in vn_info_map.items():
                 if vn in finished_vn:
                     state = "finished"
+                elif cur_dept == "016":
+                    state = "waiting_payment"
                 elif vn in drug_vn:
                     state = "waiting_drug"
                 elif vn in payment_vn:
@@ -714,7 +729,7 @@ async def task_update_hos():
                 # ใช้แผนกหลัก (main_dept) เป็นตัวโชว์ที่ Dashboard บล็อกนั้นๆ 
                 # ยกเว้นรหัสบ่อวิน หรือแผนกพิเศษ ให้ใช้ cur_dept
                 target_dept = main_dept 
-                if cur_dept.startswith('90') or cur_dept in {"011", "075"}:
+                if cur_dept.startswith('90') or cur_dept in DEPT_USE_CUR_DEP or cur_dept == "011":
                     target_dept = cur_dept
 
                 if target_dept in dept_stats:
