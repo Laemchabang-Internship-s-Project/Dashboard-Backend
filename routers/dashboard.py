@@ -8,6 +8,8 @@ from routers.auth import get_current_user
 from rate_limiter import limiter
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
+from cache_operationroom import KEY_OPERATION_ROOM_CACHE
+
 
 # --- Helper สำหรับกรองข้อมูลสำหรับคนนอก ---
 def get_public_view(full_data: dict):
@@ -20,10 +22,11 @@ def get_public_view(full_data: dict):
             "hos_telemed": s.get("hos_telemed", "-"),
             "total_drug_delivery": s.get("total_drug_delivery", "-"),
             "total_drug_delivery_postal": s.get("total_drug_delivery_postal", "-"),
-            "total_drug_delivery_rider": s.get("total_drug_delivery_rider", "-")
+            "total_drug_delivery_rider": s.get("total_drug_delivery_rider", "-"),
         },
-        "status": "public_access"
+        "status": "public_access",
     }
+
 
 # ==========================================================
 # 1. Public Route (เช็ค API Key)
@@ -36,6 +39,7 @@ async def get_public_snapshot(request: Request):
         raise HTTPException(status_code=503, detail="Loading...")
     return get_public_view(json.loads(raw))
 
+
 @router.get("/public/stream")
 async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
     async def event_generator():
@@ -47,8 +51,11 @@ async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
                 yield f"data: {json.dumps(get_public_view(json.loads(initial)))}\n\n"
 
             while True:
-                if await request.is_disconnected(): break
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if await request.is_disconnected():
+                    break
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
                 if message:
                     data = json.loads(message["data"])
                     yield f"data: {json.dumps(get_public_view(data))}\n\n"
@@ -60,6 +67,7 @@ async def public_stream(request: Request, api_key: str = Depends(get_api_key)):
             await pubsub.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # ==========================================================
 # 2. Internal Route (เช็ค API Key + JWT Token)
@@ -74,6 +82,7 @@ async def get_internal_snapshot(
     if not raw:
         raise HTTPException(status_code=503, detail="Loading...")
     return json.loads(raw)
+
 
 @router.get("/internal/stream")
 async def internal_stream(
@@ -90,8 +99,11 @@ async def internal_stream(
                 yield f"data: {initial}\n\n"
 
             while True:
-                if await request.is_disconnected(): break
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if await request.is_disconnected():
+                    break
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
                 if message:
                     yield f"data: {message['data']}\n\n"
                 else:
@@ -102,3 +114,24 @@ async def internal_stream(
             await pubsub.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.get("/internal/operation-rooms", dependencies=[Depends(get_api_key)])
+@limiter.limit("50/minute")
+async def get_operation_rooms_summary(
+    request: Request, _user: dict = Depends(get_current_user)
+):
+    try:
+        from cache_operationroom import KEY_OPERATION_ROOM_CACHE
+
+        raw = await redis_client.get(KEY_OPERATION_ROOM_CACHE)
+
+        if not raw:
+            raise HTTPException(
+                status_code=503, detail="กำลังประมวลผลข้อมูลห้องผ่าตัด กรุณารอสักครู่..."
+            )
+
+        return {"status": "success", "data": json.loads(raw)}
+    except Exception as e:
+        print(f"[Operation Endpoint] Error: {e}")
+        raise HTTPException(status_code=500, detail="ไม่สามารถดึงข้อมูลห้องผ่าตัดได้")

@@ -3,7 +3,7 @@ import json
 import ipaddress
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException , Query, Request, Response
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -17,6 +17,7 @@ from routers import graph as graph_router
 
 from database_neoq import get_db as get_neoq_db
 from database_hos import get_db as get_hos_db
+
 # หมายเหตุ: ตรวจสอบว่ามีไฟล์ security.py ในโฟลเดอร์ utils หากใช้งาน API Key
 from utils.security import get_api_key
 from slowapi.middleware import SlowAPIMiddleware
@@ -44,6 +45,7 @@ from rate_limiter import limiter
 
 # --- Filter Router ---
 from routers import filter as filter_router
+from cache_operationroom import task_update_operation_rooms
 
 
 load_dotenv()
@@ -58,9 +60,11 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(update_redis_cache())
     bed_task = asyncio.create_task(task_update_beds())
     finance_task = asyncio.create_task(task_update_finance())
+    operation_room_task = asyncio.create_task(task_update_operation_rooms())
     # --- Database Initialization ---
     from database_analytics import engine as analytics_engine, BaseAnalytics
     import models_analytics
+
     for i in range(10):
         try:
             BaseAnalytics.metadata.create_all(bind=analytics_engine)
@@ -76,6 +80,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
     bed_task.cancel()
     finance_task.cancel()
+    operation_room_task.cancel()
     print("[Main] Cache Worker Task หยุดทำงานแล้ว")
 
 
@@ -84,7 +89,7 @@ app = FastAPI(
     version="2.0.0",
     description="ระบบ Dashboard โรงพยาบาลแหลมฉบัง (Real-time via Redis Pub/Sub)",
     lifespan=lifespan,
-    swagger_ui_parameters={"docExpansion": "none"}
+    swagger_ui_parameters={"docExpansion": "none"},
 )
 app.add_middleware(SlowAPIMiddleware)
 
@@ -94,7 +99,6 @@ app.add_middleware(SlowAPIMiddleware)
 # ==========================================================
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 
 
 X_FORWARDED_FOR_HEADER = APIKeyHeader(name="X-Forwarded-For", auto_error=False)
@@ -107,10 +111,7 @@ X_FORWARDED_FOR_HEADER = APIKeyHeader(name="X-Forwarded-For", auto_error=False)
 # 1. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://dashboard.lcbh.go.th",
-        "http://localhost:5174"
-        ],
+    allow_origins=["https://dashboard.lcbh.go.th", "http://localhost:5174"],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["x-api-key", "Content-Type", "X-Forwarded-For", "Authorization"],
@@ -134,7 +135,7 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-    
+
     # ป้องกัน MIME type sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
     # ป้องกัน Clickjacking (ไม่ให้แสดงใน iframe)
@@ -142,7 +143,9 @@ async def add_security_headers(request: Request, call_next):
     # ป้องกัน XSS (สำหรับ browser เก่า)
     response.headers["X-XSS-Protection"] = "1; mode=block"
     # บังคับใช้ HTTPS (1 ปี)
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
     # ป้องกัน information leakage ผ่าน Referer
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # ป้องกันการเรียกใช้ API ที่ไม่ได้รับอนุญาต
@@ -150,7 +153,7 @@ async def add_security_headers(request: Request, call_next):
     # ไม่ให้ cache API response (ป้องกันข้อมูลเก่าค้าง)
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     response.headers["Pragma"] = "no-cache"
-    
+
     return response
 
 
@@ -159,6 +162,7 @@ async def add_security_headers(request: Request, call_next):
 # ==========================================================
 MAX_REQUEST_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
 
+
 @app.middleware("http")
 async def limit_request_size(request: Request, call_next):
     # ตรวจสอบ Content-Length header
@@ -166,8 +170,7 @@ async def limit_request_size(request: Request, call_next):
     if content_length:
         if int(content_length) > MAX_REQUEST_BODY_SIZE:
             return JSONResponse(
-                status_code=413,
-                content={"detail": "Request body too large (สูงสุด 1MB)"}
+                status_code=413, content={"detail": "Request body too large (สูงสุด 1MB)"}
             )
     return await call_next(request)
 
@@ -188,22 +191,24 @@ def custom_openapi():
     openapi_schema["components"]["securitySchemes"]["XForwardedFor"] = {
         "type": "apiKey",
         "name": "X-Forwarded-For",
-        "in": "header"
+        "in": "header",
     }
     # สั่งให้ทุก Endpoint สามารถใช้ช่องนี้ได้ (หรือจะระบุเฉพาะบางหน้าก็ได้)
     for path in openapi_schema["paths"]:
         for method in openapi_schema["paths"][path]:
             if "security" not in openapi_schema["paths"][path][method]:
                 openapi_schema["paths"][path][method]["security"] = []
-            openapi_schema["paths"][path][method]["security"].append({"XForwardedFor": []})
-            
+            openapi_schema["paths"][path][method]["security"].append(
+                {"XForwardedFor": []}
+            )
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 
 app.openapi = custom_openapi
 
-app.include_router(filter_router.router ,tags = ["Filter Data"])
+app.include_router(filter_router.router, tags=["Filter Data"])
 
 # ==========================================================
 # Router Registration
@@ -218,6 +223,7 @@ app.include_router(graph_router.router)
 app.include_router(bed_router.router)
 # Finance Router
 app.include_router(finance_router.router)
+
 
 # ==========================================================
 # System Endpoints
@@ -234,14 +240,20 @@ async def health_check(
     # neoq DB
     try:
         neoq_db.execute(text("SELECT 1"))
-        results["neoq_db"] = {"status": "success", "message": "Connected to neoq Database"}
+        results["neoq_db"] = {
+            "status": "success",
+            "message": "Connected to neoq Database",
+        }
     except Exception as e:
         results["neoq_db"] = {"status": "error", "message": str(e)}
 
     # hos DB
     try:
         hos_db.execute(text("SELECT 1"))
-        results["hos_db"] = {"status": "success", "message": "Connected to hos Database"}
+        results["hos_db"] = {
+            "status": "success",
+            "message": "Connected to hos Database",
+        }
     except Exception as e:
         results["hos_db"] = {"status": "error", "message": str(e)}
 
@@ -255,4 +267,3 @@ async def health_check(
     # overall
     all_ok = all(v["status"] == "success" for v in results.values())
     return {"overall": "ok" if all_ok else "degraded", "services": results}
-
