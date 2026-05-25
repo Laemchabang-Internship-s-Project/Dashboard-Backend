@@ -1,6 +1,7 @@
 import asyncio
 import json
-from fastapi import APIRouter, Request, Depends, HTTPException
+from datetime import date
+from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from cache_manager import redis_client, CHANNEL_DASHBOARD, KEY_DASHBOARD_CACHE
 from utils.security import get_api_key
@@ -135,3 +136,53 @@ async def get_operation_rooms_summary(
     except Exception as e:
         print(f"[Operation Endpoint] Error: {e}")
         raise HTTPException(status_code=500, detail="ไม่สามารถดึงข้อมูลห้องผ่าตัดได้")
+
+
+@router.get("/internal/operation-rooms/history", dependencies=[Depends(get_api_key)])
+async def get_operation_rooms_history(
+    start_date: date = Query(..., description="วันที่เริ่มต้น (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="วันที่สิ้นสุด (YYYY-MM-DD)"),
+    _user: dict = Depends(get_current_user),
+):
+    # ➕ เพิ่มเงื่อนไขตรวจสอบ Limit 1 ปี (365 วัน)
+    if (end_date - start_date).days > 365:
+        raise HTTPException(
+            status_code=400,
+            detail="ขอบเขตช่วงเวลาห้ามเกิน 1 ปี (365 วัน) เพื่อป้องกันฐานข้อมูลทำงานหนักเกินไป",
+        )
+
+    try:
+        from database_hos import SessionLocal as SessionHOS
+        from sqlalchemy import text
+
+        with SessionHOS() as db:
+            sql = text(
+                """
+                SELECT
+                    r.room_name,
+                    COUNT(l.operation_id) AS total_cases
+                FROM operation_room r
+                LEFT JOIN operation_list l 
+                    ON r.room_id = l.room_id
+                    AND l.operation_date BETWEEN :start_date AND :end_date
+                GROUP BY r.room_id, r.room_name
+                ORDER BY total_cases DESC, r.room_name ASC;
+            """
+            )
+
+            result = db.execute(
+                sql, {"start_date": start_date, "end_date": end_date}
+            ).fetchall()
+            data = [
+                {"room_name": row[0], "total_cases": int(row[1] or 0)}
+                for row in result
+                if row[0] is not None
+            ]
+            return {
+                "status": "success",
+                "period": {"start": start_date, "end": end_date},
+                "data": data,
+            }
+    except Exception as e:
+        print(f"[Filter Operation History] Error: {e}")
+        raise HTTPException(status_code=500, detail="ไม่สามารถดึงข้อมูลสถิติย้อนหลังได้")
