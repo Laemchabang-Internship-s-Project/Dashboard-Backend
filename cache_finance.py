@@ -341,6 +341,7 @@ async def get_finance_data(
     view: str = "by_pttype",
     month: str = None,
     year: str = None,
+    date: str = None,
 ):
     """
     ดึงข้อมูล Finance จาก Redis Cache
@@ -398,6 +399,26 @@ async def get_finance_data(
         }
 
     else:  # by_pttype (default)
+        if date:
+            raw_full = await redis_client.get(KEY_FINANCE_RAW_FULL)
+            if not raw_full:
+                return []
+            existing_data = json.loads(raw_full)
+            day_data = existing_data.get(date, {})
+            result = []
+            for ptcode, vals in day_data.items():
+                result.append({
+                    "pttype_code": ptcode,
+                    "pttype_name": vals["pttype_name"],
+                    "total_patients": vals["total_patients"],
+                    "total_visits": vals["total_visits"],
+                    "cash_amount": vals["cash_amount"],
+                    "debtor_amount": vals["debtor_amount"],
+                    "unpaid_amount": vals["unpaid_amount"],
+                    "total_amount": vals["total_amount"]
+                })
+            return sorted(result, key=lambda x: x["pttype_code"])
+            
         raw = await redis_client.get(KEY_FINANCE_BY_PTTYPE)
         if not raw:
             return []

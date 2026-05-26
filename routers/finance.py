@@ -41,6 +41,10 @@ async def get_finance_summary(
         None,
         description="กรองข้อมูล monthly ตามปี เช่น '2025' (ใช้กับ view=monthly)"
     ),
+    date: Optional[str] = Query(
+        None,
+        description="กรองข้อมูลตามวันที่ เช่น '2025-04-20' (ใช้กับ view=by_pttype)"
+    ),
 ):
     """
     ## Finance Summary
@@ -69,5 +73,5 @@ async def get_finance_summary(
     - `unpaid_amount`  : ยอดค้างชำระ (paidst 0)
     - `total_amount`   : ยอดรวมทั้งหมด
     """
-    data = await get_finance_data(view=view, month=month, year=year)
+    data = await get_finance_data(view=view, month=month, year=year, date=date)
     return {"status": "success", "view": view, "data": data}
