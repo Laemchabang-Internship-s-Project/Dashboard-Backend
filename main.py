@@ -47,6 +47,9 @@ from rate_limiter import limiter
 from routers import filter as filter_router
 from cache_operationroom import task_update_operation_rooms
 
+from cache_referout import task_update_referout
+from routers import referout as referout_router
+
 
 load_dotenv()
 
@@ -61,6 +64,7 @@ async def lifespan(app: FastAPI):
     bed_task = asyncio.create_task(task_update_beds())
     finance_task = asyncio.create_task(task_update_finance())
     operation_room_task = asyncio.create_task(task_update_operation_rooms())
+    referout_task = asyncio.create_task(task_update_referout())
     # --- Database Initialization ---
     from database_analytics import engine as analytics_engine, BaseAnalytics
     import models_analytics
@@ -81,6 +85,7 @@ async def lifespan(app: FastAPI):
     bed_task.cancel()
     finance_task.cancel()
     operation_room_task.cancel()
+    referout_task.cancel()
     print("[Main] Cache Worker Task หยุดทำงานแล้ว")
 
 
@@ -220,9 +225,12 @@ app.include_router(fuel.router)
 app.include_router(auth_router.router)
 # Graph Router
 app.include_router(graph_router.router)
+# IPD Router
 app.include_router(bed_router.router)
 # Finance Router
 app.include_router(finance_router.router)
+# Referout Router
+app.include_router(referout_router.router)
 
 
 # ==========================================================
