@@ -120,6 +120,39 @@ def fetch_referout_range_sync(start_date: str, end_date: str) -> dict:
     return default_data
 
 
+def fetch_referout_cases_by_severity_sync(
+    severity_id: int, start_date: str, end_date: str
+) -> list:
+    """ดึงรายละเอียดเคสตามประเภทความรุนแรงและช่วงวันที่กำหนด (เฉพาะ referout_id และ pre_diagnosis)"""
+    try:
+        with SessionHOS() as db_hos:
+            sql = text(
+                """
+                SELECT referout_id, pre_diagnosis
+                FROM referout
+                WHERE vstdate BETWEEN :start AND :end
+                  AND referout_emergency_type_id = :severity_id
+                ORDER BY vstdate DESC, referout_id DESC;
+            """
+            )
+            result = db_hos.execute(
+                sql, {"severity_id": severity_id, "start": start_date, "end": end_date}
+            )
+
+            cases = []
+            for row in result.fetchall():
+                cases.append(
+                    {
+                        "referout_id": row[0],
+                        "pre_diagnosis": row[1] or "ไม่ได้ระบุการวินิจฉัย",
+                    }
+                )
+            return cases
+    except Exception as e:
+        print(f"[Cache Referout] Cases Detail Query Error: {e}")
+    return []
+
+
 # ==========================================================
 # Background Task & Getters
 # ==========================================================
