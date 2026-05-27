@@ -111,7 +111,10 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
                     SUM(CASE WHEN i.paidst = 0     THEN i.rcptamt ELSE 0 END) AS unpaid_amount,
 
                     -- ยอดรวมทั้งหมดของใบเสร็จ
-                    SUM(i.rcptamt)                                      AS total_amount
+                    SUM(i.rcptamt)                                      AS total_amount,
+
+                    -- จำนวนคนที่ชำระเงิน (เงินสด)
+                    COUNT(DISTINCT CASE WHEN i.paidst IN (1, 3) THEN i.hn END) AS cash_patients
 
                 FROM incoth i
                 LEFT JOIN pttype t  ON i.pttype  = t.pttype
@@ -141,6 +144,7 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
                     "debtor_amount":  float(r[6] or 0),
                     "unpaid_amount":  float(r[7] or 0),
                     "total_amount":   float(r[8] or 0),
+                    "cash_patients":  int(r[9] or 0),
                 }
 
     except Exception as e:
@@ -159,6 +163,8 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
         "today_debtor": 0.0,
         "month_total":  0.0,
         "year_total":   0.0,
+        "today_patients": 0,
+        "today_cash_patients": 0,
     }
     current_month = today.strftime('%Y-%m')
     current_year  = today.strftime('%Y')
@@ -177,8 +183,9 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
         day_cash      = sum(v["cash_amount"]    for v in day_data.values())
         day_debtor    = sum(v["debtor_amount"]  for v in day_data.values())
         day_unpaid    = sum(v["unpaid_amount"]  for v in day_data.values())
-        day_patients  = sum(v["total_patients"] for v in day_data.values())
-        day_visits    = sum(v["total_visits"]   for v in day_data.values())
+        day_patients  = sum(v.get("total_patients", 0) for v in day_data.values())
+        day_visits    = sum(v.get("total_visits", 0)   for v in day_data.values())
+        day_cash_pat  = sum(v.get("cash_patients", 0)  for v in day_data.values())
 
         daily_list.append({
             "date":           d_str,
@@ -195,6 +202,8 @@ def fetch_finance_incremental_sync(existing_data: dict) -> tuple:
             kpi["today_total"]  = day_total
             kpi["today_cash"]   = day_cash
             kpi["today_debtor"] = day_debtor
+            kpi["today_patients"] = day_patients
+            kpi["today_cash_patients"] = day_cash_pat
         if d_str.startswith(current_month):
             kpi["month_total"] += day_total
         if d_str.startswith(current_year):
