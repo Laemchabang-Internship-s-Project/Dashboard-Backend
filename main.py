@@ -65,18 +65,6 @@ async def lifespan(app: FastAPI):
     finance_task = asyncio.create_task(task_update_finance())
     operation_room_task = asyncio.create_task(task_update_operation_rooms())
     referout_task = asyncio.create_task(task_update_referout())
-    # --- Database Initialization ---
-    from database_analytics import engine as analytics_engine, BaseAnalytics
-    import models_analytics
-
-    for i in range(10):
-        try:
-            BaseAnalytics.metadata.create_all(bind=analytics_engine)
-            print("[Main] Database Analytics tables created")
-            break
-        except Exception as e:
-            print(f"[Main] Waiting for Database Analytics... ({i+1}/10)")
-            await asyncio.sleep(3)
 
     print("[Main] Cache Worker Task เริ่มทำงานแล้ว")
     yield

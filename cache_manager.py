@@ -6,7 +6,6 @@ import os
 from sqlalchemy import text, bindparam
 from database_neoq import SessionLocal as SessionNEOQ
 from database_hos import SessionLocal as SessionHOS
-from database_analytics import SessionAnalytics
 from datetime import datetime, timedelta
 
 # ==========================================================
@@ -57,118 +56,6 @@ async def patch_redis_cache(new_data: dict):
     except Exception as e:
         print(f"[Patch Cache] Error: {e}")
 
-def init_analytics_db():
-    with SessionAnalytics() as db:
-        db.execute(text("""
-            CREATE TABLE IF NOT EXISTS hospital_logs (
-                id SERIAL PRIMARY KEY,
-                log_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                total_opd INTEGER,
-                total_walkin INTEGER,
-                total_telemed INTEGER,
-                total_drug_delivery INTEGER,
-                total_drug_delivery_postal INTEGER,
-                total_drug_delivery_rider INTEGER
-            );
-        """))
-        db.commit()
-        
-        db.execute(text("""
-            CREATE TABLE IF NOT EXISTS hospital_dept_logs (
-                id SERIAL PRIMARY KEY,
-                log_id INTEGER REFERENCES hospital_logs(id) ON DELETE CASCADE,
-                dept_code VARCHAR(10),
-                total_patients INTEGER,
-                waiting_screening INTEGER,
-                waiting_exam INTEGER,
-                waiting_lab INTEGER,
-                waiting_xray INTEGER,
-                avg_total FLOAT,
-                avg_wait_screening FLOAT,
-                avg_wait_exam FLOAT,
-                avg_wait_drug FLOAT,
-                waiting_drug INTEGER,
-                waiting_payment INTEGER,
-                go_home INTEGER
-            );
-        """))
-        db.commit()
-
-async def save_hospital_log(full_data: dict):
-    try:
-        with SessionAnalytics() as db:
-            sys = full_data.get("system", {})
-            result = db.execute(
-                text("""
-                    INSERT INTO hospital_logs 
-                    (total_opd, total_walkin, total_telemed, 
-                    total_drug_delivery, total_drug_delivery_postal, total_drug_delivery_rider)
-                    VALUES (:to, :tw, :tt, :tdd, :tdd_postal, :tdd_rider)
-                    RETURNING id
-                """),
-                {
-                    "to":         sys.get("total_OPD", 0),
-                    "tw":         sys.get("total_walkin", 0),
-                    "tt":         sys.get("hos_telemed", 0),
-                    "tdd":        sys.get("total_drug_delivery", 0),
-                    "tdd_postal": sys.get("total_drug_delivery_postal", 0),
-                    "tdd_rider":  sys.get("total_drug_delivery_rider", 0),
-                }
-            )
-            log_id = result.fetchone()[0]
-
-            clinics = full_data.get("opd_clinics", {})
-            rooms = clinics.get("rooms", [])
-            summary = full_data.get("summary", {})
-
-            # ใช้ TRACKED_DEPTS เพื่อวนลูปบันทึก Log รายแผนก
-            for code in TRACKED_DEPTS:
-                room = next((r for r in rooms if r["room_code"] == code), {})
-                dep_sum = summary.get(f"dep_{code}", {})
-                stats = clinics.get(f"stats_{code}", {})
-
-                db.execute(
-                    text("""
-                    INSERT INTO hospital_dept_logs 
-                    (log_id, dept_code, total_patients, waiting_screening, 
-                     waiting_exam, waiting_lab, waiting_xray, 
-                     avg_total, avg_wait_screening, avg_wait_exam, avg_wait_drug, 
-                     waiting_drug, waiting_payment, go_home)
-                    VALUES (:log_id, :code, :total, :w_screen, :w_exam, :w_lab, :w_xray,
-                            :a_total, :a_screen, :a_exam, :a_drug, :wd, :wp, :gh)
-                    """),
-                    {
-                        "log_id": log_id, "code": code,
-                        "total": room.get("total", 0),
-                        "w_screen": room.get("waiting", 0),
-                        "w_exam": stats.get("waiting_exam", 0),
-                        "w_lab": stats.get("waiting_lab", 0),
-                        "w_xray": stats.get("waiting_xray", 0),
-                        "a_total": dep_sum.get("avg_total", 0),
-                        "a_screen": dep_sum.get("avg_wait_screening", 0),
-                        "a_exam": dep_sum.get("avg_wait_exam", 0),
-                        "a_drug": dep_sum.get("avg_wait_drug", 0),
-                        "wd": dep_sum.get("waiting_drug", 0),
-                        "wp": dep_sum.get("waiting_payment", 0),
-                        "gh": room.get("finished", 0)
-                    }
-                )
-            db.commit()
-    except Exception as e:
-        print(f"[Save Log] Error: {e}")
-
-async def cleanup_old_logs(days_to_keep: int = 1095): 
-    try:
-        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        with SessionAnalytics() as db:
-            db.execute(
-                text("DELETE FROM hospital_logs WHERE log_time < :cutoff"),
-                {"cutoff": cutoff_date}
-            )
-            db.commit()
-            print(f"[Cleanup] สำเร็จ: ลบข้อมูลที่เก่ากว่าวันที่ {cutoff_date.date()} เรียบร้อย")
-    except Exception as e:
-        print(f"[Cleanup Error] : {e}")
 
 async def update_fuel_cache(fuel_data: dict) -> bool:
     try:
@@ -632,7 +519,6 @@ def fetch_neoq_sync():
 
 async def task_update_hos():
     print("[Task HOSxP] เริ่มทำงาน...")
-    init_analytics_db()
     log_counter = 0
     last_cleanup_date = None
     
@@ -812,20 +698,6 @@ async def task_update_hos():
                 patch_data["opd_clinics"][f"stats_{dept}"] = dept_stats.get(dept, {})
 
             await patch_redis_cache(patch_data)
-
-            # --- Analytics log (ทุก 60 รอบ = ทุก 5 นาที) ---
-            if log_counter % 60 == 0:
-                full_data = await get_cached_data()
-                if full_data and "opd_clinics" in full_data:
-                    await save_hospital_log(full_data)
-                    
-                    # Cleanup old logs once a day
-                    current_date = datetime.now().date()
-                    if last_cleanup_date != current_date:
-                        await cleanup_old_logs(days_to_keep=1095)
-                        last_cleanup_date = current_date
-                        
-                    print(f"[Log Analytics] บันทึกเรียบร้อย (รอบที่ {log_counter // 60})")
 
             log_counter = (log_counter + 1) % 3600
 

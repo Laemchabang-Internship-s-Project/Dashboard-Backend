@@ -2,6 +2,7 @@
 routers/fuel.py
 POST /api/fuel/webhook  — รับข้อมูลตรวจเช็ครถจาก Google Apps Script แล้วอัป Redis ทันที
 GET  /api/fuel/latest   — ดูค่าล่าสุดจาก Redis
+GET  /api/fuel/history  — ดูประวัติจาก Redis
 """
 
 from fastapi import APIRouter, HTTPException, Header, Depends, Request
@@ -13,9 +14,6 @@ from cache_manager import update_fuel_cache, redis_client, KEY_FUEL_CACHE, KEY_F
 from rate_limiter import limiter
 import json
 from utils.security import get_api_key
-from sqlalchemy.orm import Session
-from database_analytics import get_analytics_db
-from models_analytics import FuelRecord
 
 router = APIRouter(prefix="/api/fuel", tags=["Fuel"])
 
@@ -44,7 +42,7 @@ class FuelUpdatePayload(BaseModel):
     timestamp: str       # Timestamp ที่ต้องการอัปเดต
     status: str          # สถานะใหม่
     app_name: str        # ชื่อผู้อนุมัติ
-    
+
 # ----------------------------------------------------------
 # POST /api/fuel/webhook
 # ----------------------------------------------------------
@@ -54,23 +52,13 @@ async def fuel_webhook(
     request: Request,
     payload: FuelPayload,
     x_webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
-    db: Session = Depends(get_analytics_db)
 ):
     if FUEL_WEBHOOK_SECRET and x_webhook_secret != FUEL_WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid webhook secret")
 
     fuel_data = payload.model_dump()
-    
-    # 1. บันทึกลง Database
-    try:
-        new_record = FuelRecord(**fuel_data)
-        db.add(new_record)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    # 2. อัปเดตลง Redis Cache
+    # อัปเดตลง Redis Cache
     success = await update_fuel_cache(fuel_data)
 
     if not success:
@@ -92,36 +80,26 @@ async def fuel_webhook_update(
     request: Request,
     payload: FuelUpdatePayload,
     x_webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
-    db: Session = Depends(get_analytics_db)
 ):
     if FUEL_WEBHOOK_SECRET and x_webhook_secret != FUEL_WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # 1. บันทึกอัปเดตลง Database
-    record = db.query(FuelRecord).filter(FuelRecord.timestamp == payload.timestamp).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Record not found in database")
-        
-    record.status = payload.status
-    record.app_name = payload.app_name
-    db.commit()
-
-    # 2. อัปเดตลง Redis Cache แบบเจาะจง
     from cache_manager import patch_redis_cache
-    
+
+    # อัปเดตใน Redis History List
     items = await redis_client.lrange(KEY_FUEL_HISTORY, 0, -1)
     updated_data = None
-    
+
     for i, item_str in enumerate(items):
         item_data = json.loads(item_str)
         if item_data.get("timestamp") == payload.timestamp:
             item_data["status"] = payload.status
             item_data["app_name"] = payload.app_name
             updated_data = item_data
-            
+
             # อัปเดตกลับไปที่ List เดิม
             await redis_client.lset(KEY_FUEL_HISTORY, i, json.dumps(item_data, ensure_ascii=False))
-            
+
             # ถ้าเป็น index 0 แปลว่าเป็นข้อมูลล่าสุด ต้องอัปเดต KEY_FUEL_CACHE ด้วย
             if i == 0:
                 await redis_client.set(KEY_FUEL_CACHE, json.dumps(item_data, ensure_ascii=False))
@@ -129,20 +107,19 @@ async def fuel_webhook_update(
             break
 
     if not updated_data:
-        # กรณีข้อมูลเก่ามากจนตกขอบ Redis ไปแล้ว (ไม่อยู่ใน 100 อันดับแรก) ให้ถือว่า Success เพราะอัปเดต DB ไปแล้ว
-        pass
+        raise HTTPException(status_code=404, detail="Record not found in Redis history")
 
     return {
         "status": "ok",
         "message": "Fuel status updated",
-        "data": updated_data or {"timestamp": payload.timestamp, "status": payload.status}
+        "data": updated_data,
     }
 
 
 # ----------------------------------------------------------
 # GET /api/fuel/latest
 # ----------------------------------------------------------
-@router.get("/latest" , dependencies=[Depends(get_api_key)] )
+@router.get("/latest", dependencies=[Depends(get_api_key)])
 @limiter.limit("30/minute")
 async def get_latest_fuel(request: Request):
     """ดึงข้อมูลตรวจเช็ครถล่าสุดจาก Redis"""
@@ -153,44 +130,31 @@ async def get_latest_fuel(request: Request):
 
 
 # ----------------------------------------------------------
-# GET /api/fuel/history?limit=100
+# GET /api/fuel/history?limit=100&offset=0
 # ----------------------------------------------------------
 @router.get("/history", dependencies=[Depends(get_api_key)])
 @limiter.limit("30/minute")
-async def get_fuel_history(request: Request, limit: int = 100, offset: int = 0, db: Session = Depends(get_analytics_db)):
+async def get_fuel_history(request: Request, limit: int = 100, offset: int = 0):
     """
-    ดึงประวัติการตรวจเช็ครถล่าสุด
-    - ถ้า offset = 0 ดึงจาก Redis List ทันที (เร็วมาก)
-    - ถ้า offset > 0 ดึงจาก PostgreSQL เพื่อโหลดประวัติย้อนหลัง
+    ดึงประวัติการตรวจเช็ครถจาก Redis List
+    - limit: จำนวนรายการ (สูงสุด 100)
+    - offset: เริ่มต้นจาก index ที่เท่าไหร่
     """
     limit = min(limit, 100)  # cap ไว้ที่ 100
 
-    if offset == 0:
-        # ดึง 100 อันดับแรกจาก Redis
-        items = await redis_client.lrange(KEY_FUEL_HISTORY, 0, limit - 1)
-        if items:
-            return {
-                "total": len(items),
-                "source": "redis",
-                "records": [json.loads(item) for item in items],
-            }
-
-    # ดึงประวัติเพิ่มเติมจาก Database
-    try:
-        records = db.query(FuelRecord).order_by(FuelRecord.id.desc()).offset(offset).limit(limit).all()
-        result_list = []
-        for r in records:
-            r_dict = r.__dict__.copy()
-            r_dict.pop('_sa_instance_state', None)
-            result_list.append(r_dict)
-            
+    items = await redis_client.lrange(KEY_FUEL_HISTORY, offset, offset + limit - 1)
+    if not items:
         return {
-            "total": len(result_list),
-            "source": "database",
-            "records": result_list,
+            "total": 0,
+            "source": "redis",
+            "records": [],
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
+
+    return {
+        "total": len(items),
+        "source": "redis",
+        "records": [json.loads(item) for item in items],
+    }
 
 
 # ----------------------------------------------------------
@@ -207,10 +171,9 @@ async def fuel_backfill(
     request: Request,
     payload: BackfillPayload,
     x_webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
-    db: Session = Depends(get_analytics_db)
 ):
     """
-    รับ records หลายรายการพร้อมกัน เอาเข้า Database และ Redis
+    รับ records หลายรายการพร้อมกัน เอาเข้า Redis
     ใช้รันครั้งเดียวเพื่อโหลดประวัติเก่าจาก Google Sheet
     """
     from cache_manager import FUEL_HISTORY_MAX
@@ -221,22 +184,9 @@ async def fuel_backfill(
     if not payload.records:
         raise HTTPException(status_code=400, detail="ไม่มีข้อมูล")
 
-    # 1. เอาข้อมูลลง Database
-    try:
-        # ตรวจสอบเพื่อไม่ให้ข้อมูลซ้ำแบบมักง่าย คือลบข้อมูลเก่าใน db ให้หมดก่อนแบ็คฟิล
-        db.query(FuelRecord).delete()
-        
-        # เพิ่มข้อมูลทั้งหมด
-        db_records = [FuelRecord(**r) for r in payload.records]
-        db.add_all(db_records)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-    # 2. เอาข้อมูลลง Redis 100 รายการล่าสุด
+    # เคลียร์ Redis History แล้วใส่ข้อมูลใหม่ทั้งหมด
     await redis_client.delete(KEY_FUEL_HISTORY)
-    
+
     # records ควรเรียงจากเก่า -> ใหม่ เมื่อใช้ lpush อันใหม่สุดจะอยู่หน้า
     for r in payload.records:
         await redis_client.lpush(KEY_FUEL_HISTORY, json.dumps(r, ensure_ascii=False))
@@ -252,6 +202,6 @@ async def fuel_backfill(
     total_redis = await redis_client.llen(KEY_FUEL_HISTORY)
     return {
         "status": "ok",
-        "pushed_to_db": len(payload.records),
+        "pushed_to_redis": len(payload.records),
         "total_in_redis": total_redis,
     }
