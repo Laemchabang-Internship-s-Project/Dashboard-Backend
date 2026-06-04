@@ -461,12 +461,12 @@ def fetch_neoq_sync():
                                SUM(CASE WHEN status_id != '3' THEN 1 ELSE 0 END),
                                AVG(CASE 
                                    WHEN status_id = '3' AND `time` IS NOT NULL AND visit_time IS NOT NULL 
-                                   THEN TIMESTAMPDIFF(MINUTE, `time`, visit_time) 
+                                   THEN ABS(TIMESTAMPDIFF(MINUTE, `time`, visit_time)) 
                                    ELSE NULL 
                                END),
                                SEC_TO_TIME(AVG(CASE 
                                    WHEN status_id = '3' AND `time` IS NOT NULL AND visit_time IS NOT NULL 
-                                   THEN TIME_TO_SEC(TIMEDIFF(visit_time, `time`)) 
+                                   THEN ABS(TIME_TO_SEC(TIMEDIFF(visit_time, `time`))) 
                                    ELSE NULL 
                                END))
                         FROM {table_name}
