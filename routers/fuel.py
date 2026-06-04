@@ -86,13 +86,19 @@ async def fuel_webhook_update(
 
     from cache_manager import patch_redis_cache
 
+    # normalize timestamp ก่อนเปรียบเทียบ ป้องกัน space/format drift
+    def normalize_ts(ts: str) -> str:
+        return ts.strip().replace("  ", " ")
+
+    target_ts = normalize_ts(payload.timestamp)
+
     # อัปเดตใน Redis History List
     items = await redis_client.lrange(KEY_FUEL_HISTORY, 0, -1)
     updated_data = None
 
     for i, item_str in enumerate(items):
         item_data = json.loads(item_str)
-        if item_data.get("timestamp") == payload.timestamp:
+        if normalize_ts(item_data.get("timestamp", "")) == target_ts:
             item_data["status"] = payload.status
             item_data["app_name"] = payload.app_name
             updated_data = item_data
@@ -100,15 +106,21 @@ async def fuel_webhook_update(
             # อัปเดตกลับไปที่ List เดิม
             await redis_client.lset(KEY_FUEL_HISTORY, i, json.dumps(item_data, ensure_ascii=False))
 
-            # ถ้าเป็น index 0 แปลว่าเป็นข้อมูลล่าสุด ต้องอัปเดต KEY_FUEL_CACHE ด้วย
-            if i == 0:
-                await redis_client.set(KEY_FUEL_CACHE, json.dumps(item_data, ensure_ascii=False))
-                await patch_redis_cache({"car": {"fuel_latest": item_data}})
+            # อัปเดต KEY_FUEL_CACHE เสมอ (ไม่ใช่แค่ index 0)
+            # เพราะอาจมีรายการใหม่บันทึกมาแทรกก่อนหน้า
+            await redis_client.set(KEY_FUEL_CACHE, json.dumps(item_data, ensure_ascii=False))
+            await patch_redis_cache({"car": {"fuel_latest": item_data}})
             break
 
     if not updated_data:
-        raise HTTPException(status_code=404, detail="Record not found in Redis history")
+        # Log ชัดเจนเพื่อ debug ง่าย
+        print(f"[Fuel Update]  ไม่เจอ timestamp: '{target_ts}' ใน {len(items)} รายการใน Redis")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Record not found in Redis history (timestamp='{target_ts}')"
+        )
 
+    print(f"[Fuel Update]  อัปเดตสำเร็จ: '{target_ts}' → {payload.status}")
     return {
         "status": "ok",
         "message": "Fuel status updated",
